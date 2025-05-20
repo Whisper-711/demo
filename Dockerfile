@@ -13,5 +13,8 @@ COPY newest.py .
 # 创建数据目录
 RUN mkdir -p /app/ati_surcharge_data
 
+# 设置数据卷
+VOLUME /app/ati_surcharge_data
+
 # 运行爬虫
 CMD ["python", "newest.py"]
