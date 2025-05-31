@@ -3,11 +3,25 @@ import json
 import pandas as pd
 import os
 import time
+import logging
 from datetime import datetime
+from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ted_crawler.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger('ted_crawler')
 
 OUTPUT_DIR = 'data'
 OUTPUT_FILE = os.path.join(OUTPUT_DIR, 'ted_api_tenders_10pages.csv')
+CACHE_DIR = os.path.join(OUTPUT_DIR, 'cache')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 API_URL = 'https://tedweb.api.ted.europa.eu/private-search/api/v1/notices/search'
 
@@ -19,10 +33,10 @@ HEADERS = {
     'Referer': 'https://ted.europa.eu/'
 }
 
-def create_payload(page=1, page_size=50):
+def create_payload(page_number=1, page_size=50):
     return {
         "query": "(classification-cpv IN (44000000 45000000))  SORT BY publication-number DESC",
-        "page": page,
+        "page": page_number,
         "limit": page_size,
         "fields": [
             "publication-number",
@@ -62,24 +76,57 @@ def create_payload(page=1, page_size=50):
         }
     }
 
-def fetch_tenders(page=1, page_size=50):
-    """从API获取招标数据"""
-    payload = create_payload(page, page_size)
+def get_cache_file_path(page_number):
+    return Path(CACHE_DIR) / f'ted_api_raw_page{page_number}.json'
+
+def load_from_cache(page_number):
+    cache_file = get_cache_file_path(page_number)
+    if cache_file.exists():
+        try:
+            logger.info(f"Loading data from cache for page {page_number}")
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading cache for page {page_number}: {str(e)}")
+    return None
+
+def save_to_cache(data, page_number):
+    if not data:
+        return
+    
+    cache_file = get_cache_file_path(page_number)
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved data to cache: {cache_file}")
+    except Exception as e:
+        logger.error(f"Error saving cache for page {page_number}: {str(e)}")
+
+def fetch_tenders(session, page_number=1, page_size=50, use_cache=True):
+    if use_cache:
+        cached_data = load_from_cache(page_number)
+        if cached_data:
+            return cached_data
+    
+    payload = create_payload(page_number, page_size)
     
     try:
-        print(f"正在请求第 {page} 页数据...")
-        response = requests.post(API_URL, headers=HEADERS, json=payload)
+        logger.info(f"Requesting page {page_number} data from API...")
+        response = session.post(API_URL, json=payload)
         
         if response.status_code == 200:
             data = response.json()
-            print(f"成功获取第 {page} 页数据")
+            logger.info(f"Successfully retrieved page {page_number} data")
+            
+            save_to_cache(data, page_number)
+            
             return data
         else:
-            print(f"请求失败，状态码: {response.status_code}")
-            print(f"响应内容: {response.text}")
+            logger.error(f"Request failed with status code: {response.status_code}")
+            logger.error(f"Response content: {response.text}")
             return None
     except Exception as e:
-        print(f"请求异常: {str(e)}")
+        logger.error(f"Request exception: {str(e)}")
         return None
 
 def extract_tender_info(notice):
@@ -155,68 +202,62 @@ def save_data(data, filename, append=False):
     header = not (append and os.path.exists(filename))
 
     df.to_csv(filename, mode=mode, header=header, index=False, encoding='utf-8-sig')
-    print(f"保存了 {len(df)} 条数据到 {filename}")
+    logger.info(f"Saved {len(df)} records to {filename}")
 
-def save_raw_data(data, page):
-    if not data:
-        return
-    
-    raw_file = os.path.join(OUTPUT_DIR, f'ted_api_raw_page{page}.json')
-    with open(raw_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"保存数据到 {raw_file}")
-
-def scrape_ted_api(max_pages=10):
+def scrape_ted_api(max_pages=10, use_cache=True):
     all_tenders = []
     total_count = 0
     
-    print(f"开始抓取数据，计划抓取 {max_pages} 页...")
+    logger.info(f"Starting TED API data scraping, planning to scrape {max_pages} pages...")
     
-    for page in range(1, max_pages + 1):
-        print(f"\n正在抓取第 {page} 页...")
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    
+    for page_number in range(1, max_pages + 1):
+        logger.info(f"\nScraping page {page_number}...")
         
-        data = fetch_tenders(page)
+        data = fetch_tenders(session, page_number, use_cache=use_cache)
         
         if not data:
-            print(f"第 {page} 页数据获取失败，停止抓取")
+            logger.error(f"Failed to get data for page {page_number}, stopping scraping")
             break
-        
-        save_raw_data(data, page)
         
         notices = data.get('notices', [])
         
         if not notices:
-            print(f"第 {page} 页没有通知数据，停止抓取")
+            logger.warning(f"No notice data on page {page_number}, stopping scraping")
             break
         
-        if page == 1 and 'totalNoticeCount' in data:
+        if page_number == 1 and 'totalNoticeCount' in data:
             total_count = data.get('totalNoticeCount', 0)
-            print(f"总共找到 {total_count} 条")
+            logger.info(f"Found a total of {total_count} tender notices")
         
         page_tenders = []
         for notice in notices:
             tender = extract_tender_info(notice)
             page_tenders.append(tender)
         
-        print(f"从第 {page} 页提取了 {len(page_tenders)} 条数据")
+        logger.info(f"Extracted {len(page_tenders)} records from page {page_number}")
         
         all_tenders.extend(page_tenders)
         
-        save_data(page_tenders, OUTPUT_FILE, append=(page > 1))
+        save_data(page_tenders, OUTPUT_FILE, append=(page_number > 1))
         
-        if page < max_pages:
+        if page_number < max_pages:
             delay = 2.0
-            print(f"等待 {delay} 秒后抓取下一页")
+            logger.info(f"Waiting {delay} seconds before scraping the next page")
             time.sleep(delay)
     
-    print(f"\n抓取完成，共抓取 {len(all_tenders)} 条数据")
+    logger.info(f"\nScraping completed, scraped a total of {len(all_tenders)} records")
     return all_tenders
 
 if __name__ == "__main__":
     MAX_PAGES = 10
+    USE_CACHE = True
     
     start_time = time.time()
-    tenders = scrape_ted_api(MAX_PAGES)
+    tenders = scrape_ted_api(MAX_PAGES, USE_CACHE)
     end_time = time.time()
     
-    print(f"数据已保存到: {OUTPUT_FILE}") 
+    logger.info(f"Data has been saved to: {OUTPUT_FILE}")
+    logger.info(f"Total execution time: {end_time - start_time:.2f} seconds")
