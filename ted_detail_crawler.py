@@ -1,434 +1,270 @@
 import requests
 import json
-import pandas as pd
 import os
-import time
+import pandas as pd
 import logging
-from datetime import datetime
-from pathlib import Path
-from bs4 import BeautifulSoup
-import re
 
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('ted_crawler.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger('ted_crawler')
 
-class TedDetailCrawler:
-    def __init__(self, input_file=None, output_dir='data', max_details=50, use_cache=True):
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.StreamHandler(),
-                logging.FileHandler('ted_detail_crawler.log', encoding='utf-8')
-            ]
-        )
-        self.logger = logging.getLogger('ted_detail_crawler')
-        
-        self.output_dir = output_dir
-        self.cache_dir = os.path.join(output_dir, 'detail_cache')
-        self.input_file = input_file or os.path.join(output_dir, 'ted_api_tenders.csv')
-        self.output_file = os.path.join(output_dir, 'ted_tender_details.csv')
-        
-        os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(self.cache_dir, exist_ok=True)
-        
-        self.max_details = max_details
-        self.use_cache = use_cache
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://ted.europa.eu/'
-        })
+# 设置请求 URL 和请求头
+url = 'https://tedweb.api.ted.europa.eu/private-search/api/v1/notices/search'
 
-    def get_cache_file_path(self, notice_number):
-        safe_notice = re.sub(r'[\\/*?:"<>|]', "_", notice_number)
-        return Path(self.cache_dir) / f'ted_detail_{safe_notice}.html'
+headers = {
+    'content-length': '568',
+    'sec-ch-ua-platform': '"Windows"',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0',
+    'accept': 'application/json, text/plain, */*',
+    'sec-ch-ua': '"Microsoft Edge";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
+    'content-type': 'application/json',
+    'sec-ch-ua-mobile': '?0',
+    'origin': 'https://ted.europa.eu',
+    'sec-fetch-site': 'same-site',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+    'referer': 'https://ted.europa.eu/',
+    'accept-encoding': 'gzip, deflate, br, zstd',
+    'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+    'cookie': 'GUEST_LANGUAGE_ID=en_GB; COOKIE_SUPPORT=true; cck1=%7B%22cm%22%3Atrue%2C%22all1st%22%3Atrue%2C%22closed%22%3Afalse%7D; route=1750647858.277.364.784926|726825d00aba56cccab96f4e82375684'
+}
 
-    def load_from_cache(self, notice_number):
-        cache_file = self.get_cache_file_path(notice_number)
-        if cache_file.exists():
-            try:
-                self.logger.info(f"Loading detail from cache for notice {notice_number}")
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    return f.read()
-            except Exception as e:
-                self.logger.error(f"Error loading cache for notice {notice_number}: {str(e)}")
+# 设置请求体
+request_body = {
+    "query": "publication-number=401988-2025",
+    "page": 1,
+    "limit": 50,
+    "fields": [
+        "family",
+        "amended-by",
+        "cancelled-by",
+        "last-version",
+        "extended-by",
+        "notice-standard-version",
+        "procedure-identifier",
+        "main-classification-proc",
+        "classification-cpv",
+        "buyer-country",
+        "buyer-profile",
+        "translation-languages",
+        "notice-type",
+        "notice-title",
+        "latest-version"
+    ],
+    "validation": False,
+    "scope": "ALL",
+    "language": "EN",
+    "onlyLatestVersions": False,
+    "facets": {
+        "business-opportunity": [],
+        "cpv": [],
+        "contract-nature": [],
+        "place-of-performance": [],
+        "procedure-type": [],
+        "publication-date": [],
+        "buyer-country": []
+    }
+}
+
+def extract_and_save_data(json_data, publication_number):
+    """从JSON数据中提取有用信息并保存为CSV"""
+    try:
+        # 检查是否有通知数据
+        if not json_data.get("notices"):
+            logger.warning("No notice information found in JSON data")
+            return
+
+        # 获取第一个通知（在这个例子中只有一个）
+        notice = json_data["notices"][0]
+
+        # 提取有用信息
+        extracted_data = {
+            "publication_number": notice.get("publication-number", ""),
+            "notice_type": notice.get("notice-type", {}).get("label", ""),
+            "procedure_id": notice.get("procedure-identifier", ""),
+            "country": ", ".join([country.get("label", "") for country in notice.get("buyer-country", [])]),
+            "main_cpv": ", ".join([cpv.get("label", "") for cpv in notice.get("main-classification-proc", [])]),
+            "cpv_codes": ", ".join(
+                [f"{cpv.get('value', '')}: {cpv.get('label', '')}" for cpv in notice.get("classification-cpv", [])]),
+            "buyer_profile": ", ".join(notice.get("buyer-profile", [])),
+            "title_en": notice.get("notice-title", {}).get("eng", ""),
+            "title_es": notice.get("notice-title", {}).get("spa", ""),
+            "pdf_url_en": notice.get("links", {}).get("pdf", {}).get("ENG", ""),
+            "html_url_en": notice.get("links", {}).get("html", {}).get("ENG", ""),
+        }
+
+        # 提取facets中的额外信息
+        facets = json_data.get("facets", {})
+        if facets:
+            # 提取程序类型
+            procedure_types = facets.get("procedure-type", [])
+            if procedure_types:
+                extracted_data["procedure_type"] = procedure_types[0].get("label", "")
+
+            # 提取合同性质
+            contract_natures = facets.get("contract-nature", [])
+            if contract_natures:
+                extracted_data["contract_nature"] = contract_natures[0].get("label", "")
+
+            # 提取出版年份
+            pub_dates = facets.get("publication-date", [])
+            if pub_dates:
+                extracted_data["publication_year"] = pub_dates[0].get("label", "")
+
+        # 将提取的数据转换为DataFrame
+        df = pd.DataFrame([extracted_data])
+
+        # 保存为CSV
+        csv_filename = f"data/tender_{publication_number}.csv"
+        df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+        logger.info(f"Extracted data saved to: {csv_filename}")
+
+        return extracted_data
+
+    except Exception as e:
+        logger.error(f"Error extracting and saving data: {e}")
         return None
 
-    def save_to_cache(self, content, notice_number):
-        if not content:
-            return
-        
-        cache_file = self.get_cache_file_path(notice_number)
-        try:
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                f.write(content)
-            self.logger.info(f"Saved detail to cache: {cache_file}")
-        except Exception as e:
-            self.logger.error(f"Error saving cache for notice {notice_number}: {str(e)}")
 
-    def load_tender_list(self):
-        if not os.path.exists(self.input_file):
-            self.logger.error(f"Input file not found: {self.input_file}")
-            return []
-        
-        try:
-            df = pd.read_csv(self.input_file)
-            self.logger.info(f"Loaded {len(df)} tenders from {self.input_file}")
-            return df.to_dict('records')
-        except Exception as e:
-            self.logger.error(f"Error loading tender list: {str(e)}")
-            return []
+# 如果已经有缓存的JSON文件，可以直接从中提取数据
+def process_cached_json(json_file_path):
+    """处理已缓存的JSON文件并提取数据"""
+    try:
+        with open(json_file_path, 'r', encoding='utf-8') as f:
+            json_data = json.load(f)
 
-    def normalize_url(self, url, notice_number):
-        if "/en/notice/-/detail/" in url:
-            return url
-            
-        match = re.search(r'(\d+)-(\d+)', notice_number)
-        if match:
-            notice_id = f"{match.group(1)}-{match.group(2)}"
-            return f"https://ted.europa.eu/en/notice/-/detail/{notice_id}"
-            
-        match = re.search(r'notice/(\d+)', url)
-        if match:
-            notice_id = match.group(1)
-            return f"https://ted.europa.eu/en/notice/-/detail/{notice_id}"
-            
-        self.logger.warning(f"Could not normalize URL: {url}")
-        return url
-
-    def fetch_detail_page(self, url, notice_number):
-        if not url:
-            self.logger.warning(f"No URL provided for notice {notice_number}")
-            return None
-        
-        normalized_url = self.normalize_url(url, notice_number)
-        
-        if self.use_cache:
-            cached_content = self.load_from_cache(notice_number)
-            if cached_content:
-                return cached_content
-        
-        try:
-            self.logger.info(f"Fetching detail page for notice {notice_number}: {normalized_url}")
-            response = self.session.get(normalized_url)
-            
-            if response.status_code == 200:
-                content = response.text
-                self.logger.info(f"Successfully retrieved detail page for notice {notice_number}")
-                
-                self.save_to_cache(content, notice_number)
-                
-                return content
-            else:
-                self.logger.error(f"Request failed with status code: {response.status_code}")
-                return None
-        except Exception as e:
-            self.logger.error(f"Request exception: {str(e)}")
-            return None
-
-    def extract_detail_info(self, html_content, base_info):
-        if not html_content:
-            return base_info
-        
-        detail_info = base_info.copy()
-        
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            self._extract_by_structure(soup, detail_info)
-            
-            return detail_info
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing HTML: {str(e)}")
-            return base_info
-
-    def _extract_by_structure(self, soup, detail_info):
-        title_element = soup.select_one('h1.notice-title') or soup.select_one('h1')
-        if title_element:
-            detail_info['page_title'] = title_element.get_text(strip=True)
-        
-        sections = soup.select('section') or soup.select('div.section') or soup.select('div[class*="section"]')
-        
-        if not sections:
-            self.logger.warning("No sections found, trying to extract from divs")
-            sections = soup.select('div.row') or soup.select('div[class*="content"]')
-        
-        for section in sections:
-            header = section.select_one('h2, h3, h4, .section-title, .title')
-            if header:
-                section_title = header.get_text(strip=True)
-                self._process_section_by_title(section, section_title, detail_info)
-            else:
-                self._process_section_by_content(section, detail_info)
-        
-        self._extract_documents(soup, detail_info)
-        
-        self._extract_cpv_codes(soup, detail_info)
-        
-        self._extract_nuts_codes(soup, detail_info)
-
-    def _process_section_by_title(self, section, title, detail_info):
-        title_lower = title.lower()
-        content = section.get_text(strip=True).replace(title, '', 1).strip()
-        
-        if any(kw in title_lower for kw in ['contracting authority', 'buyer', 'purchaser']):
-            detail_info['buyer_details'] = content
-            
-            contact_div = section.select_one('div[class*="contact"]')
-            if contact_div:
-                detail_info['buyer_contact'] = contact_div.get_text(strip=True)
-            
-            address_div = section.select_one('div[class*="address"]')
-            if address_div:
-                detail_info['buyer_address'] = address_div.get_text(strip=True)
-            
-        elif any(kw in title_lower for kw in ['object', 'description', 'subject']):
-            detail_info['tender_description'] = content
-            
-        elif any(kw in title_lower for kw in ['value', 'budget', 'price']):
-            detail_info['budget'] = content
-            
-        elif any(kw in title_lower for kw in ['duration', 'period', 'term']):
-            detail_info['duration'] = content
-            
-        elif any(kw in title_lower for kw in ['award', 'criteria']):
-            detail_info['award_criteria'] = content
-            
-        elif any(kw in title_lower for kw in ['condition', 'requirement']):
-            detail_info['conditions'] = content
-            
-        elif any(kw in title_lower for kw in ['procedure', 'process']):
-            detail_info['procedure'] = content
-            
-        elif any(kw in title_lower for kw in ['deadline', 'date', 'time']):
-            detail_info['deadlines'] = content
-            
-        elif any(kw in title_lower for kw in ['additional', 'other', 'further']):
-            detail_info['additional_info'] = content
-            
+        # 从文件名中提取出版号
+        filename = os.path.basename(json_file_path)
+        parts = filename.split('_')
+        if len(parts) >= 3:
+            publication_number = parts[2].split('.')[0]
         else:
-            safe_key = re.sub(r'[^a-zA-Z0-9_]', '_', title_lower)
-            safe_key = re.sub(r'_+', '_', safe_key).strip('_')
-            if safe_key and content:
-                detail_info[f'section_{safe_key}'] = content
+            publication_number = "unknown"
 
-    def _process_section_by_content(self, section, detail_info):
-        section_class = section.get('class', [])
-        section_class = ' '.join(section_class) if isinstance(section_class, list) else section_class
-        section_text = section.get_text(strip=True)
-        
-        if 'buyer' in section_class or 'authority' in section_class:
-            detail_info['buyer_details'] = section_text
-        elif 'object' in section_class or 'description' in section_class:
-            detail_info['tender_description'] = section_text
-        elif 'value' in section_class or 'budget' in section_class:
-            detail_info['budget'] = section_text
-        elif 'document' in section_class:
-            pass
+        # 提取并保存数据
+        return extract_and_save_data(json_data, publication_number)
 
-    def _extract_documents(self, soup, detail_info):
-        document_links = (
-            soup.select('a[href*="document"]') or 
-            soup.select('a[class*="document"]') or 
-            soup.select('a[href$=".pdf"]') or 
-            soup.select('a[href$=".doc"]') or 
-            soup.select('a[href$=".docx"]') or 
-            soup.select('a[href$=".zip"]')
-        )
-        
-        if document_links:
-            docs = []
-            for link in document_links:
-                url = link.get('href')
-                if url and not url.startswith(('http://', 'https://')):
-                    url = f"https://ted.europa.eu{url}" if url.startswith('/') else f"https://ted.europa.eu/{url}"
-                
-                title = link.get_text(strip=True) or os.path.basename(url)
-                if url:
-                    docs.append({'title': title, 'url': url})
-            
-            if docs:
-                detail_info['documents'] = json.dumps(docs, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error processing cached JSON file: {e}")
+        return None
 
-    def _extract_cpv_codes(self, soup, detail_info):
-        cpv_elements = (
-            soup.select('[class*="cpv"]') or 
-            soup.select('div:has(> span:contains("CPV"))') or
-            soup.select('tr:has(> td:contains("CPV"))')
-        )
-        
-        if cpv_elements:
-            cpv_texts = []
-            for elem in cpv_elements:
-                text = elem.get_text(strip=True)
-                if 'CPV' in text:
-                    cpv_texts.append(text)
-            
-            if cpv_texts:
-                detail_info['cpv_codes'] = ', '.join(cpv_texts)
 
-    def _extract_nuts_codes(self, soup, detail_info):
-        nuts_elements = (
-            soup.select('[class*="nuts"]') or 
-            soup.select('div:has(> span:contains("NUTS"))') or
-            soup.select('tr:has(> td:contains("NUTS"))')
-        )
-        
-        if nuts_elements:
-            nuts_texts = []
-            for elem in nuts_elements:
-                text = elem.get_text(strip=True)
-                if 'NUTS' in text:
-                    nuts_texts.append(text)
-            
-            if nuts_texts:
-                detail_info['nuts_codes'] = ', '.join(nuts_texts)
+# 确保cache目录存在
+os.makedirs('cache', exist_ok=True)
+# 确保data目录存在
+os.makedirs('data', exist_ok=True)
 
-    def save_data(self, data, filename=None, append=False):
-        if not data:
-            return
-            
-        if filename is None:
-            filename = self.output_file
-            
-        df = pd.DataFrame([data])
-        
-        mode = 'a' if append else 'w'
-        header = not (append and os.path.exists(filename))
+# 从请求体中提取出版号和页码用于文件命名
+publication_number = request_body["query"].split("=")[1] if "=" in request_body["query"] else "unknown"
+page_number = request_body["page"]
 
-        df.to_csv(filename, mode=mode, header=header, index=False, encoding='utf-8-sig')
-        self.logger.info(f"Saved detail data for notice {data.get('notice_number', 'unknown')} to {filename}")
-
-    def run(self):
-        tenders = self.load_tender_list()
-        if not tenders:
-            self.logger.error("No tenders to process")
-            return []
+try:
+    # 发送 POST 请求，获取响应
+    response = requests.post(url, headers=headers, json=request_body)
+    
+    # 检查请求是否成功
+    if response.status_code == 200:
+        logger.info("Request successful!")
         
-        if self.max_details > 0 and len(tenders) > self.max_details:
-            self.logger.info(f"Limiting to {self.max_details} tenders out of {len(tenders)}")
-            tenders = tenders[:self.max_details]
-        
-        self.logger.info(f"Starting to fetch details for {len(tenders)} tenders...")
-        
-        start_time = time.time()
-        processed_count = 0
-        success_count = 0
-        
-        for i, tender in enumerate(tenders):
-            notice_number = tender.get('notice_number')
-            link = tender.get('link')
-            
-            if not notice_number or not link:
-                self.logger.warning(f"Missing notice number or link for tender {i+1}")
-                continue
-            
-            self.logger.info(f"Processing tender {i+1}/{len(tenders)}: {notice_number}")
-            
-            html_content = self.fetch_detail_page(link, notice_number)
-            
-            if html_content:
-                detail_info = self.extract_detail_info(html_content, tender)
-                
-                self.save_data(detail_info, append=(i > 0))
-                
-                success_count += 1
-            
-            processed_count += 1
-            
-            if i < len(tenders) - 1:
-                delay = 2.0
-                self.logger.info(f"Waiting {delay} seconds before next request")
-                time.sleep(delay)
-        
-        end_time = time.time()
-        self.logger.info(f"\nDetail crawling completed")
-        self.logger.info(f"Processed {processed_count} tenders, successfully fetched {success_count} details")
-        self.logger.info(f"Data has been saved to: {self.output_file}")
-        self.logger.info(f"Total execution time: {end_time - start_time:.2f} seconds")
-        
-        return processed_count, success_count
-
-    def download_documents(self, output_dir=None):
-        if output_dir is None:
-            output_dir = os.path.join(self.output_dir, 'documents')
-        
-        os.makedirs(output_dir, exist_ok=True)
+        # 记录响应头信息，帮助调试
+        logger.debug(f"Response headers: {response.headers}")
         
         try:
-            df = pd.read_csv(self.output_file)
+            # 尝试直接获取JSON数据（requests应该会自动处理解压）
+            json_data = response.json()
+            logger.info("Successfully parsed JSON data")
+            
+            # 将JSON数据保存到文件
+            json_filename = f"cache/page_{page_number}_{publication_number}.json"
+            with open(json_filename, 'w', encoding='utf-8') as json_file:
+                json.dump(json_data, json_file, ensure_ascii=False, indent=2)
+            
+            logger.info(f"JSON data saved to file: {json_filename}")
+            
+            # 提取有用信息
+            extract_and_save_data(json_data, publication_number)
+            
         except Exception as e:
-            self.logger.error(f"Error loading detail data: {str(e)}")
-            return 0
-        
-        download_count = 0
-        
-        for _, row in df.iterrows():
-            notice_number = row.get('notice_number')
-            documents_json = row.get('documents')
+            logger.error(f"Failed to parse JSON: {e}")
             
-            if not documents_json or pd.isna(documents_json):
-                continue
-            
+            # 尝试获取文本内容
             try:
-                documents = json.loads(documents_json)
+                text_content = response.text
+                logger.info(f"Response text content length: {len(text_content)} characters")
+                logger.debug(f"First 100 characters of response: {text_content[:100]}")
                 
-                for i, doc in enumerate(documents):
-                    doc_url = doc.get('url')
-                    doc_title = doc.get('title', f'document_{i}')
+                # 尝试手动解析JSON
+                try:
+                    json_data = json.loads(text_content)
+                    logger.info("Manual JSON parsing successful")
                     
-                    if not doc_url:
-                        continue
+                    # 将JSON数据保存到文件
+                    json_filename = f"cache/page_{page_number}_{publication_number}.json"
+                    with open(json_filename, 'w', encoding='utf-8') as json_file:
+                        json.dump(json_data, json_file, ensure_ascii=False, indent=2)
                     
-                    safe_title = re.sub(r'[\\/*?:"<>|]', "_", doc_title)
-                    file_name = f"{notice_number}_{safe_title[:50]}.pdf"
-                    file_path = os.path.join(output_dir, file_name)
+                    logger.info(f"JSON data saved to file: {json_filename}")
                     
-                    if os.path.exists(file_path):
-                        self.logger.info(f"Document already exists: {file_path}")
-                        download_count += 1
-                        continue
+                    # 提取有用信息
+                    extract_and_save_data(json_data, publication_number)
                     
-                    try:
-                        self.logger.info(f"Downloading document: {doc_title}")
-                        response = self.session.get(doc_url, stream=True)
-                        
-                        if response.status_code == 200:
-                            with open(file_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                            
-                            self.logger.info(f"Document saved to: {file_path}")
-                            download_count += 1
-                        else:
-                            self.logger.error(f"Failed to download document: {response.status_code}")
+                except json.JSONDecodeError as je:
+                    logger.error(f"Manual JSON parsing failed: {je}")
                     
-                    except Exception as e:
-                        self.logger.error(f"Error downloading document: {str(e)}")
+                    # 保存文本内容到文件
+                    text_filename = f"cache/response_text_{publication_number}-{page_number}.txt"
+                    with open(text_filename, 'w', encoding='utf-8') as f:
+                        f.write(text_content)
+                    logger.info(f"Response text content saved to: {text_filename}")
                     
-                    time.sleep(1.0)
+            except Exception as te:
+                logger.error(f"Failed to get text content: {te}")
+                
+            # 保存原始响应内容到文件
+            raw_filename = f"cache/raw_response_{publication_number}-{page_number}.bin"
+            with open(raw_filename, 'wb') as f:
+                f.write(response.content)
+            logger.info(f"Raw response content saved to: {raw_filename}")
             
-            except Exception as e:
-                self.logger.error(f"Error processing documents for {notice_number}: {str(e)}")
+    else:
+        logger.error(f"Request failed with status code: {response.status_code}")
+        # 保存错误响应到文件
+        error_filename = f"cache/error_response_{publication_number}-{page_number}.txt"
+        with open(error_filename, 'wb') as f:
+            f.write(response.content)
+        logger.info(f"Error response saved to: {error_filename}")
         
-        self.logger.info(f"Downloaded {download_count} documents to {output_dir}")
-        return download_count
+except Exception as req_error:
+    logger.error(f"Error during request: {req_error}")
 
 
-def main():
-    crawler = TedDetailCrawler(
-        input_file='data/ted_api_tenders.csv',
-        output_dir='data',
-        max_details=10,
-        use_cache=True
-    )
-    
-    processed, success = crawler.run()
-    
-    return processed, success
-
-
+# 如果脚本直接运行，处理指定的缓存文件
 if __name__ == "__main__":
-    main() 
+    # 可以通过命令行参数指定要处理的缓存文件
+    import sys
+
+    if len(sys.argv) > 1:
+        cache_file = sys.argv[1]
+        if os.path.exists(cache_file):
+            logger.info(f"Processing cache file: {cache_file}")
+            process_cached_json(cache_file)
+        else:
+            logger.error(f"Cache file does not exist: {cache_file}")
+    else:
+        # 如果没有指定缓存文件，可以处理cache目录下的所有JSON文件
+        cache_dir = "cache"
+        if os.path.exists(cache_dir):
+            json_files = [f for f in os.listdir(cache_dir) if f.endswith('.json')]
+            if json_files:
+                for json_file in json_files:
+                    logger.info(f"Processing cache file: {json_file}")
+                    process_cached_json(os.path.join(cache_dir, json_file))
+            else:
+                logger.warning(f"No JSON files found in {cache_dir} directory")
