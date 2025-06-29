@@ -36,43 +36,6 @@ headers = {
     'cookie': 'GUEST_LANGUAGE_ID=en_GB; COOKIE_SUPPORT=true; cck1=%7B%22cm%22%3Atrue%2C%22all1st%22%3Atrue%2C%22closed%22%3Afalse%7D; route=1750647858.277.364.784926|726825d00aba56cccab96f4e82375684'
 }
 
-# 设置请求体
-request_body = {
-    "query": "publication-number=401988-2025",
-    "page": 1,
-    "limit": 50,
-    "fields": [
-        "family",
-        "amended-by",
-        "cancelled-by",
-        "last-version",
-        "extended-by",
-        "notice-standard-version",
-        "procedure-identifier",
-        "main-classification-proc",
-        "classification-cpv",
-        "buyer-country",
-        "buyer-profile",
-        "translation-languages",
-        "notice-type",
-        "notice-title",
-        "latest-version"
-    ],
-    "validation": False,
-    "scope": "ALL",
-    "language": "EN",
-    "onlyLatestVersions": False,
-    "facets": {
-        "business-opportunity": [],
-        "cpv": [],
-        "contract-nature": [],
-        "place-of-performance": [],
-        "procedure-type": [],
-        "publication-date": [],
-        "buyer-country": []
-    }
-}
-
 def extract_and_save_data(json_data, publication_number):
     """从JSON数据中提取有用信息并保存为CSV"""
     try:
@@ -133,138 +96,79 @@ def extract_and_save_data(json_data, publication_number):
         return None
 
 
-# 如果已经有缓存的JSON文件，可以直接从中提取数据
-def process_cached_json(json_file_path):
-    """处理已缓存的JSON文件并提取数据"""
+def fetch_and_process_tender(publication_number, page=1):
+    """获取并处理单个招标信息"""
+    # 设置请求体
+    request_body = {
+        "query": f"publication-number={publication_number}",
+        "page": page,
+        "limit": 50,
+        "fields": [
+            "family", "amended-by", "cancelled-by", "last-version", "extended-by", 
+            "notice-standard-version", "procedure-identifier", "main-classification-proc", 
+            "classification-cpv", "buyer-country", "buyer-profile", "translation-languages", 
+            "notice-type", "notice-title", "latest-version"
+        ],
+        "validation": False,
+        "scope": "ALL",
+        "language": "EN",
+        "onlyLatestVersions": False,
+        "facets": {
+            "business-opportunity": [], "cpv": [], "contract-nature": [],
+            "place-of-performance": [], "procedure-type": [], 
+            "publication-date": [], "buyer-country": []
+        }
+    }
+    
     try:
-        with open(json_file_path, 'r', encoding='utf-8') as f:
-            json_data = json.load(f)
-
-        # 从文件名中提取出版号
-        filename = os.path.basename(json_file_path)
-        parts = filename.split('_')
-        if len(parts) >= 3:
-            publication_number = parts[2].split('.')[0]
+        # 发送 POST 请求，获取响应
+        logger.info(f"Fetching tender information for {publication_number}")
+        response = requests.post(url, headers=headers, json=request_body)
+        
+        # 检查请求是否成功
+        if response.status_code == 200:
+            logger.info("Request successful!")
+            
+            # 尝试解析JSON数据
+            try:
+                json_data = response.json()
+                logger.info("Successfully parsed JSON data")
+                
+                # 将JSON数据保存到文件
+                json_filename = f"cache/page_{page}_{publication_number}.json"
+                with open(json_filename, 'w', encoding='utf-8') as json_file:
+                    json.dump(json_data, json_file, ensure_ascii=False, indent=2)
+                
+                logger.info(f"JSON data saved to file: {json_filename}")
+                
+                # 提取并保存数据
+                return extract_and_save_data(json_data, publication_number)
+                
+            except Exception as e:
+                logger.error(f"Failed to process JSON: {e}")
+                return None
         else:
-            publication_number = "unknown"
-
-        # 提取并保存数据
-        return extract_and_save_data(json_data, publication_number)
-
-    except Exception as e:
-        logger.error(f"Error processing cached JSON file: {e}")
+            logger.error(f"Request failed with status code: {response.status_code}")
+            return None
+            
+    except Exception as req_error:
+        logger.error(f"Error during request: {req_error}")
         return None
 
 
-# 确保cache目录存在
+# 确保目录存在
 os.makedirs('cache', exist_ok=True)
-# 确保data目录存在
 os.makedirs('data', exist_ok=True)
 
-# 从请求体中提取出版号和页码用于文件命名
-publication_number = request_body["query"].split("=")[1] if "=" in request_body["query"] else "unknown"
-page_number = request_body["page"]
-
-try:
-    # 发送 POST 请求，获取响应
-    response = requests.post(url, headers=headers, json=request_body)
-    
-    # 检查请求是否成功
-    if response.status_code == 200:
-        logger.info("Request successful!")
-        
-        # 记录响应头信息，帮助调试
-        logger.debug(f"Response headers: {response.headers}")
-        
-        try:
-            # 尝试直接获取JSON数据（requests应该会自动处理解压）
-            json_data = response.json()
-            logger.info("Successfully parsed JSON data")
-            
-            # 将JSON数据保存到文件
-            json_filename = f"cache/page_{page_number}_{publication_number}.json"
-            with open(json_filename, 'w', encoding='utf-8') as json_file:
-                json.dump(json_data, json_file, ensure_ascii=False, indent=2)
-            
-            logger.info(f"JSON data saved to file: {json_filename}")
-            
-            # 提取有用信息
-            extract_and_save_data(json_data, publication_number)
-            
-        except Exception as e:
-            logger.error(f"Failed to parse JSON: {e}")
-            
-            # 尝试获取文本内容
-            try:
-                text_content = response.text
-                logger.info(f"Response text content length: {len(text_content)} characters")
-                logger.debug(f"First 100 characters of response: {text_content[:100]}")
-                
-                # 尝试手动解析JSON
-                try:
-                    json_data = json.loads(text_content)
-                    logger.info("Manual JSON parsing successful")
-                    
-                    # 将JSON数据保存到文件
-                    json_filename = f"cache/page_{page_number}_{publication_number}.json"
-                    with open(json_filename, 'w', encoding='utf-8') as json_file:
-                        json.dump(json_data, json_file, ensure_ascii=False, indent=2)
-                    
-                    logger.info(f"JSON data saved to file: {json_filename}")
-                    
-                    # 提取有用信息
-                    extract_and_save_data(json_data, publication_number)
-                    
-                except json.JSONDecodeError as je:
-                    logger.error(f"Manual JSON parsing failed: {je}")
-                    
-                    # 保存文本内容到文件
-                    text_filename = f"cache/response_text_{publication_number}-{page_number}.txt"
-                    with open(text_filename, 'w', encoding='utf-8') as f:
-                        f.write(text_content)
-                    logger.info(f"Response text content saved to: {text_filename}")
-                    
-            except Exception as te:
-                logger.error(f"Failed to get text content: {te}")
-                
-            # 保存原始响应内容到文件
-            raw_filename = f"cache/raw_response_{publication_number}-{page_number}.bin"
-            with open(raw_filename, 'wb') as f:
-                f.write(response.content)
-            logger.info(f"Raw response content saved to: {raw_filename}")
-            
-    else:
-        logger.error(f"Request failed with status code: {response.status_code}")
-        # 保存错误响应到文件
-        error_filename = f"cache/error_response_{publication_number}-{page_number}.txt"
-        with open(error_filename, 'wb') as f:
-            f.write(response.content)
-        logger.info(f"Error response saved to: {error_filename}")
-        
-except Exception as req_error:
-    logger.error(f"Error during request: {req_error}")
-
-
-# 如果脚本直接运行，处理指定的缓存文件
+# 直接运行爬虫并处理数据
 if __name__ == "__main__":
-    # 可以通过命令行参数指定要处理的缓存文件
-    import sys
-
-    if len(sys.argv) > 1:
-        cache_file = sys.argv[1]
-        if os.path.exists(cache_file):
-            logger.info(f"Processing cache file: {cache_file}")
-            process_cached_json(cache_file)
-        else:
-            logger.error(f"Cache file does not exist: {cache_file}")
+    # 设置要爬取的招标公告编号
+    publication_number = "401988-2025"
+    logger.info(f"Starting crawler for tender {publication_number}")
+    
+    result = fetch_and_process_tender(publication_number)
+    
+    if result:
+        logger.info("Crawler completed successfully")
     else:
-        # 如果没有指定缓存文件，可以处理cache目录下的所有JSON文件
-        cache_dir = "cache"
-        if os.path.exists(cache_dir):
-            json_files = [f for f in os.listdir(cache_dir) if f.endswith('.json')]
-            if json_files:
-                for json_file in json_files:
-                    logger.info(f"Processing cache file: {json_file}")
-                    process_cached_json(os.path.join(cache_dir, json_file))
-            else:
-                logger.warning(f"No JSON files found in {cache_dir} directory")
+        logger.error("Crawler failed to complete")
