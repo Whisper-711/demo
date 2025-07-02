@@ -2,12 +2,11 @@ import os
 import json
 import time
 import logging
-import random
-import re
 from datetime import datetime
+from DrissionPage import ChromiumPage, ChromiumOptions
 
 # 配置日志
-log_filename = f"dicks_firefox_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+log_filename = f"dicks_drissionpage_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -16,465 +15,292 @@ logging.basicConfig(
         logging.FileHandler(log_filename, encoding='utf-8')
     ]
 )
-logger = logging.getLogger('dicks_firefox')
-logger.info('Starting Dick\'s Sporting Goods Firefox crawler')
+logger = logging.getLogger('dicks_drissionpage')
+logger.info('开始使用DrissionPage爬取Dick\'s Sporting Goods商品分类')
 
 # 创建缓存目录
 cache_dir = 'cache'
 os.makedirs(cache_dir, exist_ok=True)
 
-# 提示安装DrissionPage
-logger.info("请确保已安装DrissionPage库：pip install DrissionPage")
-
-try:
-    from DrissionPage import ChromiumPage, ChromiumOptions, FirefoxPage, FirefoxOptions
-    from DrissionPage import SessionPage
-    from DrissionPage.common import By
-except ImportError:
-    logger.error("请先安装DrissionPage库：pip install DrissionPage")
-    exit(1)
-
-def random_sleep(min_seconds=1, max_seconds=3):
-    """随机等待一段时间，模拟人类行为"""
-    sleep_time = random.uniform(min_seconds, max_seconds)
-    logger.info(f"随机等待 {sleep_time:.2f} 秒...")
-    time.sleep(sleep_time)
-
-def setup_firefox():
-    """设置Firefox浏览器，添加反爬虫措施"""
-    logger.info("设置Firefox浏览器...")
-    
-    # 创建FirefoxOptions对象并设置选项
-    options = FirefoxOptions()
-    options.set_browser_path(r'C:\Program Files\Mozilla Firefox\firefox.exe')  # 根据实际Firefox路径调整
-    options.headless = False  # 设置为可见模式，以便观察
-    
-    # 设置用户代理为Firefox
-    options.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0')
-    
-    # 设置窗口大小
-    options.set_argument('--window-size=1920,1080')
-    
-    # 创建FirefoxPage对象
-    page = FirefoxPage(options)
-    
-    return page
-
-def extract_category_id(url):
-    """从URL中提取分类ID"""
-    # 提取 /c/category-name 或 /f/category-name 中的ID
-    c_pattern = r'/c/([a-zA-Z0-9\-_]+)'
-    f_pattern = r'/f/([a-zA-Z0-9\-_]+)'
-    
-    c_match = re.search(c_pattern, url)
-    if c_match:
-        return c_match.group(1)
-    
-    f_match = re.search(f_pattern, url)
-    if f_match:
-        return f_match.group(1)
-    
-    return None
-
-def crawl_categories():
-    """爬取Dick's Sporting Goods商品分类"""
-    logger.info("开始爬取商品分类...")
-    
-    # 设置Firefox浏览器
-    page = setup_firefox()
-    
-    try:
-        # 访问主页
-        logger.info("访问主页...")
-        page.get('https://www.dickssportinggoods.com/')
+class DicksSportingGoodsCrawler:
+    def __init__(self):
+        """初始化爬虫"""
+        logger.info("初始化DrissionPage")
         
-        # 等待页面加载
-        logger.info("等待页面加载...")
+        # 配置ChromiumOptions
+        options = ChromiumOptions()
+        options.set_argument('--disable-blink-features=AutomationControlled')  # 禁用自动化控制检测
+        options.set_argument('--disable-infobars')  # 禁用信息栏
+        options.set_argument('--start-maximized')  # 最大化窗口
+        options.set_argument('--disable-extensions')  # 禁用扩展
+        options.set_argument('--disable-gpu')  # 禁用GPU加速
+        
+        # 设置用户代理
+        options.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        
+        # 创建ChromiumPage实例
+        self.page = ChromiumPage(options=options)
+        
+        # 设置超时时间
+        self.page.set.timeouts(30, 30, 30)
+        
+    def crawl_categories(self):
+        """爬取Dick's Sporting Goods的商品分类"""
         try:
-            page.wait.doc_loaded()
-        except Exception as e:
-            logger.warning(f"等待页面加载时出错: {str(e)}")
-        
-        # 随机等待，模拟人类行为
-        random_sleep(3, 5)
-        
-        # 保存页面源代码
-        page_source = page.html
-        home_html_file = os.path.join(cache_dir, "dicks_homepage_firefox.html")
-        with open(home_html_file, 'w', encoding='utf-8') as f:
-            f.write(page_source)
-        logger.info(f"首页源代码保存至: {home_html_file}")
-        
-        # 保存截图
-        screenshot_file = os.path.join(cache_dir, "dicks_homepage_firefox.png")
-        page.get_screenshot(screenshot_file)
-        logger.info(f"首页截图保存至: {screenshot_file}")
-        
-        # 提取导航菜单
-        logger.info("提取导航菜单...")
-        
-        # 尝试点击菜单按钮（如果有的话）
-        try:
-            menu_buttons = page.eles('xpath://button[contains(@class, "navigation") or contains(@class, "menu")]')
-            if menu_buttons:
-                menu_buttons[0].click()
-                logger.info("已点击菜单按钮")
-                random_sleep(1, 2)
-        except Exception as e:
-            logger.warning(f"点击菜单按钮时出错: {str(e)}")
-        
-        # 提取所有分类链接
-        logger.info("提取所有分类链接...")
-        all_links = page.run_js('''
-            var links = [];
-            var allLinks = document.querySelectorAll('a');
+            # 访问主页
+            url = "https://www.dickssportinggoods.com"
+            logger.info(f"访问网站: {url}")
+            self.page.get(url)
             
-            for (var i = 0; i < allLinks.length; i++) {
-                var href = allLinks[i].getAttribute('href');
-                var text = allLinks[i].innerText.trim();
-                
-                if (href && text) {
-                    links.push({
-                        text: text,
-                        href: href
-                    });
-                }
-            }
+            # 等待页面加载
+            logger.info("等待页面加载...")
+            time.sleep(5)
             
-            return JSON.stringify(links);
-        ''')
-        
-        if all_links:
-            try:
-                links_data = json.loads(all_links)
+            # 保存页面截图
+            screenshot_path = os.path.join(cache_dir, "dicks_homepage_screenshot.png")
+            self.page.get_screenshot(screenshot_path)
+            logger.info(f"页面截图保存至: {screenshot_path}")
+            
+            # 保存页面源代码
+            html_path = os.path.join(cache_dir, "dicks_homepage.html")
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(self.page.html)
+            logger.info(f"页面源代码保存至: {html_path}")
+            
+            # 提取导航菜单中的主要分类
+            logger.info("提取主要商品分类...")
+            categories = []
+            
+            # 尝试查找导航菜单
+            nav_elements = self.page.eles('css:.dsg-header-nav-menu a')
+            if nav_elements:
+                logger.info(f"找到 {len(nav_elements)} 个导航链接")
                 
-                # 筛选分类链接
-                category_links = []
-                for link in links_data:
-                    href = link.get('href', '')
-                    text = link.get('text', '')
-                    
-                    # 判断是否是分类链接
-                    if href and text and ('/c/' in href or '/f/' in href):
-                        # 确保链接是完整URL
-                        if not href.startswith('http'):
-                            if href.startswith('/'):
-                                href = f"https://www.dickssportinggoods.com{href}"
-                            else:
-                                href = f"https://www.dickssportinggoods.com/{href}"
-                        
-                        # 提取分类ID
-                        category_id = extract_category_id(href)
-                        
-                        category_links.append({
-                            'name': text.strip(),
-                            'url': href,
-                            'category_id': category_id
-                        })
-                
-                # 保存分类链接
-                if category_links:
-                    links_file = os.path.join(cache_dir, "dicks_category_links_firefox.json")
-                    with open(links_file, 'w', encoding='utf-8') as f:
-                        json.dump(category_links, f, ensure_ascii=False, indent=2)
-                    logger.info(f"找到 {len(category_links)} 个分类链接，保存至: {links_file}")
-                else:
-                    logger.warning("未找到分类链接")
-            except json.JSONDecodeError:
-                logger.error("解析链接数据失败")
-        
-        # 提取顶级分类和子分类
-        logger.info("提取顶级分类和子分类结构...")
-        
-        # 查找顶级分类元素
-        top_categories = []
-        
-        # 尝试不同的选择器来找到顶级分类
-        selectors = [
-            'xpath://nav//li[contains(@class, "category") or contains(@class, "menu-item")]',
-            'css:nav .category, nav .menu-item',
-            'xpath://div[contains(@class, "navigation") or contains(@class, "menu")]//li'
-        ]
-        
-        for selector in selectors:
-            try:
-                category_elements = page.eles(selector)
-                if category_elements:
-                    logger.info(f"使用选择器 '{selector}' 找到 {len(category_elements)} 个顶级分类元素")
-                    break
-            except Exception as e:
-                logger.warning(f"使用选择器 '{selector}' 查找顶级分类时出错: {str(e)}")
-        
-        # 提取顶级分类和子分类的结构
-        category_structure = []
-        
-        # 使用JavaScript提取分类结构
-        structure_data = page.run_js('''
-            function extractCategories(element) {
-                var categories = [];
-                var menuItems = element.querySelectorAll('.menu-item, .category, li');
-                
-                for (var i = 0; i < menuItems.length; i++) {
-                    var item = menuItems[i];
-                    var linkElement = item.querySelector('a');
-                    
-                    if (!linkElement) continue;
-                    
-                    var href = linkElement.getAttribute('href');
-                    var text = linkElement.innerText.trim();
-                    
-                    if (!href || !text) continue;
-                    
-                    var category = {
-                        name: text,
-                        url: href
-                    };
-                    
-                    // 查找子分类
-                    var subMenu = item.querySelector('.sub-menu, .dropdown, ul');
-                    if (subMenu) {
-                        var subCategories = [];
-                        var subLinks = subMenu.querySelectorAll('a');
-                        
-                        for (var j = 0; j < subLinks.length; j++) {
-                            var subHref = subLinks[j].getAttribute('href');
-                            var subText = subLinks[j].innerText.trim();
-                            
-                            if (subHref && subText) {
-                                subCategories.push({
-                                    name: subText,
-                                    url: subHref
-                                });
-                            }
+                for element in nav_elements:
+                    try:
+                        category = {
+                            'name': element.text,
+                            'url': element.link,
                         }
-                        
-                        if (subCategories.length > 0) {
-                            category.subcategories = subCategories;
-                        }
-                    }
+                        if category['name'] and category['url']:
+                            categories.append(category)
+                    except Exception as e:
+                        logger.error(f"提取导航元素时出错: {str(e)}")
+            
+            # 如果没有找到导航菜单，尝试其他选择器
+            if not categories:
+                logger.info("尝试其他选择器查找分类...")
+                # 尝试查找顶部导航
+                nav_elements = self.page.eles('css:.dsg-header-top-level-nav a')
+                if nav_elements:
+                    logger.info(f"找到 {len(nav_elements)} 个顶部导航链接")
                     
-                    categories.push(category);
-                }
-                
-                return categories;
-            }
-            
-            var navElements = document.querySelectorAll('nav, .navigation, .menu');
-            var allCategories = [];
-            
-            for (var i = 0; i < navElements.length; i++) {
-                var categories = extractCategories(navElements[i]);
-                if (categories.length > 0) {
-                    allCategories = allCategories.concat(categories);
-                }
-            }
-            
-            return JSON.stringify(allCategories);
-        ''')
-        
-        if structure_data:
-            try:
-                category_structure = json.loads(structure_data)
-                
-                # 处理分类结构数据
-                processed_structure = []
-                
-                for category in category_structure:
-                    name = category.get('name', '')
-                    url = category.get('url', '')
-                    
-                    if name and url and ('/c/' in url or '/f/' in url):
-                        # 确保链接是完整URL
-                        if not url.startswith('http'):
-                            if url.startswith('/'):
-                                url = f"https://www.dickssportinggoods.com{url}"
-                            else:
-                                url = f"https://www.dickssportinggoods.com/{url}"
-                        
-                        # 提取分类ID
-                        category_id = extract_category_id(url)
-                        
-                        processed_category = {
-                            'name': name.strip(),
-                            'url': url,
-                            'category_id': category_id
-                        }
-                        
-                        # 处理子分类
-                        subcategories = category.get('subcategories', [])
-                        if subcategories:
-                            processed_subcategories = []
-                            
-                            for subcategory in subcategories:
-                                sub_name = subcategory.get('name', '')
-                                sub_url = subcategory.get('url', '')
-                                
-                                if sub_name and sub_url and ('/c/' in sub_url or '/f/' in sub_url):
-                                    # 确保链接是完整URL
-                                    if not sub_url.startswith('http'):
-                                        if sub_url.startswith('/'):
-                                            sub_url = f"https://www.dickssportinggoods.com{sub_url}"
-                                        else:
-                                            sub_url = f"https://www.dickssportinggoods.com/{sub_url}"
-                                    
-                                    # 提取分类ID
-                                    sub_category_id = extract_category_id(sub_url)
-                                    
-                                    processed_subcategories.append({
-                                        'name': sub_name.strip(),
-                                        'url': sub_url,
-                                        'category_id': sub_category_id
-                                    })
-                            
-                            if processed_subcategories:
-                                processed_category['subcategories'] = processed_subcategories
-                        
-                        processed_structure.append(processed_category)
-                
-                # 保存分类结构
-                if processed_structure:
-                    structure_file = os.path.join(cache_dir, "dicks_category_structure_firefox.json")
-                    with open(structure_file, 'w', encoding='utf-8') as f:
-                        json.dump(processed_structure, f, ensure_ascii=False, indent=2)
-                    logger.info(f"提取了 {len(processed_structure)} 个顶级分类的结构，保存至: {structure_file}")
-            except json.JSONDecodeError:
-                logger.error("解析分类结构数据失败")
-        
-        # 提取全局状态数据
-        logger.info("提取全局状态数据...")
-        global_state = page.run_js('''
-            var data = {};
-            
-            // 尝试获取各种全局状态
-            if (window.__INITIAL_STATE__) {
-                data.initialState = window.__INITIAL_STATE__;
-            }
-            if (window.__NAVIGATION_STATE__) {
-                data.navigationState = window.__NAVIGATION_STATE__;
-            }
-            if (window.__CATEGORY_STATE__) {
-                data.categoryState = window.__CATEGORY_STATE__;
-            }
-            
-            return JSON.stringify(data);
-        ''')
-        
-        if global_state:
-            try:
-                state_data = json.loads(global_state)
-                state_file = os.path.join(cache_dir, "dicks_global_state_firefox.json")
-                with open(state_file, 'w', encoding='utf-8') as f:
-                    json.dump(state_data, f, ensure_ascii=False, indent=2)
-                logger.info(f"全局状态数据保存至: {state_file}")
-                
-                # 从全局状态中提取分类信息
-                if 'navigationState' in state_data:
-                    nav_state = state_data['navigationState']
-                    if 'categories' in nav_state:
-                        nav_categories = nav_state['categories']
-                        nav_categories_file = os.path.join(cache_dir, "dicks_navigation_categories.json")
-                        with open(nav_categories_file, 'w', encoding='utf-8') as f:
-                            json.dump(nav_categories, f, ensure_ascii=False, indent=2)
-                        logger.info(f"从全局状态中提取的导航分类保存至: {nav_categories_file}")
-            except json.JSONDecodeError:
-                logger.error("解析全局状态数据失败")
-        
-        # 尝试使用网络请求获取分类API数据
-        logger.info("尝试获取分类API数据...")
-        
-        # 捕获网络请求
-        network_data = page.run_js('''
-            var requests = [];
-            
-            if (window.performance && window.performance.getEntries) {
-                var entries = window.performance.getEntries();
-                
-                for (var i = 0; i < entries.length; i++) {
-                    var entry = entries[i];
-                    
-                    if (entry.entryType === 'resource' && 
-                        (entry.name.includes('/api/') || 
-                         entry.name.includes('/category/') || 
-                         entry.name.includes('/categories/'))) {
-                        
-                        requests.push({
-                            url: entry.name,
-                            initiatorType: entry.initiatorType,
-                            duration: entry.duration
-                        });
-                    }
-                }
-            }
-            
-            return JSON.stringify(requests);
-        ''')
-        
-        if network_data:
-            try:
-                api_data = json.loads(network_data)
-                api_file = os.path.join(cache_dir, "dicks_api_requests_firefox.json")
-                with open(api_file, 'w', encoding='utf-8') as f:
-                    json.dump(api_data, f, ensure_ascii=False, indent=2)
-                logger.info(f"API请求数据保存至: {api_file}")
-                
-                # 尝试请求分类API
-                category_apis = [req['url'] for req in api_data if 'category' in req['url'].lower()]
-                
-                if category_apis:
-                    logger.info(f"找到 {len(category_apis)} 个可能的分类API")
-                    
-                    # 创建SessionPage对象用于发送请求
-                    session = SessionPage()
-                    session.set_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0')
-                    session.set_header('Referer', 'https://www.dickssportinggoods.com/')
-                    
-                    # 尝试请求每个API
-                    for idx, api_url in enumerate(category_apis[:3]):  # 限制只请求前3个API
+                    for element in nav_elements:
                         try:
-                            logger.info(f"请求API [{idx+1}/{len(category_apis[:3])}]: {api_url}")
-                            response = session.get(api_url)
-                            
-                            if response.status_code == 200:
-                                try:
-                                    api_response = response.json()
-                                    api_response_file = os.path.join(cache_dir, f"dicks_api_response_{idx+1}.json")
-                                    with open(api_response_file, 'w', encoding='utf-8') as f:
-                                        json.dump(api_response, f, ensure_ascii=False, indent=2)
-                                    logger.info(f"API响应数据保存至: {api_response_file}")
-                                except:
-                                    logger.warning(f"API响应不是有效的JSON")
-                            else:
-                                logger.warning(f"API请求失败: {response.status_code}")
-                            
-                            # 添加延迟
-                            random_sleep(2, 3)
+                            category = {
+                                'name': element.text,
+                                'url': element.link,
+                            }
+                            if category['name'] and category['url']:
+                                categories.append(category)
                         except Exception as e:
-                            logger.error(f"请求API时出错: {str(e)}")
-            except json.JSONDecodeError:
-                logger.error("解析API请求数据失败")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"爬取过程中出错: {str(e)}")
-        return False
-    finally:
-        # 关闭浏览器
-        logger.info("关闭浏览器...")
-        try:
-            page.quit()
+                            logger.error(f"提取顶部导航元素时出错: {str(e)}")
+            
+            # 如果仍然没有找到分类，尝试执行JavaScript获取
+            if not categories:
+                logger.info("尝试通过JavaScript获取分类...")
+                # 执行JavaScript获取所有链接
+                links = self.page.run_js('''
+                    const links = Array.from(document.querySelectorAll('a')).filter(a => 
+                        a.href.includes('/c/') || 
+                        a.href.includes('/f/') || 
+                        a.href.includes('/category/'));
+                    return links.map(a => ({name: a.innerText.trim(), url: a.href}))
+                        .filter(link => link.name && link.url);
+                ''')
+                
+                if links:
+                    logger.info(f"通过JavaScript找到 {len(links)} 个可能的分类链接")
+                    categories = links
+            
+            # 保存分类数据
+            if categories:
+                logger.info(f"总共提取到 {len(categories)} 个分类")
+                categories_file = os.path.join(cache_dir, "dicks_categories.json")
+                with open(categories_file, 'w', encoding='utf-8') as f:
+                    json.dump(categories, f, ensure_ascii=False, indent=2)
+                logger.info(f"分类数据保存至: {categories_file}")
+                
+                # 提取子分类
+                self.extract_subcategories(categories)
+            else:
+                logger.warning("未找到任何分类")
+                
+            return categories
+                
         except Exception as e:
-            logger.error(f"关闭浏览器时出错: {str(e)}")
+            logger.error(f"爬取分类时出错: {str(e)}")
+            return []
+        finally:
+            # 关闭浏览器
+            self.page.quit()
+            logger.info("浏览器已关闭")
+    
+    def extract_subcategories(self, main_categories):
+        """提取子分类"""
+        logger.info("开始提取子分类...")
+        all_categories = {}
+        
+        # 只处理前3个主分类，避免请求过多
+        for i, category in enumerate(main_categories[:3]):
+            try:
+                category_name = category['name']
+                category_url = category['url']
+                
+                if not category_url.startswith('http'):
+                    category_url = f"https://www.dickssportinggoods.com{category_url}"
+                
+                logger.info(f"访问分类页面: {category_name} - {category_url}")
+                self.page.get(category_url)
+                time.sleep(3)  # 等待页面加载
+                
+                # 保存分类页面截图
+                screenshot_path = os.path.join(cache_dir, f"dicks_category_{i+1}.png")
+                self.page.get_screenshot(screenshot_path)
+                
+                # 提取子分类
+                subcategories = []
+                
+                # 尝试查找子分类链接
+                subcategory_elements = self.page.eles('css:.dsg-left-nav-menu a, .dsg-category-list a')
+                
+                if subcategory_elements:
+                    logger.info(f"在 {category_name} 分类中找到 {len(subcategory_elements)} 个子分类链接")
+                    
+                    for element in subcategory_elements:
+                        try:
+                            subcategory = {
+                                'name': element.text,
+                                'url': element.link,
+                            }
+                            if subcategory['name'] and subcategory['url']:
+                                subcategories.append(subcategory)
+                        except Exception as e:
+                            logger.error(f"提取子分类元素时出错: {str(e)}")
+                
+                # 如果没有找到子分类，尝试执行JavaScript获取
+                if not subcategories:
+                    logger.info(f"尝试通过JavaScript获取 {category_name} 的子分类...")
+                    # 执行JavaScript获取所有链接
+                    links = self.page.run_js('''
+                        const links = Array.from(document.querySelectorAll('a')).filter(a => 
+                            (a.href.includes('/c/') || a.href.includes('/f/') || a.href.includes('/category/')) &&
+                            a.innerText.trim().length > 0);
+                        return links.map(a => ({name: a.innerText.trim(), url: a.href}))
+                            .filter(link => link.name && link.url);
+                    ''')
+                    
+                    if links:
+                        logger.info(f"通过JavaScript在 {category_name} 中找到 {len(links)} 个可能的子分类链接")
+                        subcategories = links
+                
+                all_categories[category_name] = {
+                    'main_category': category,
+                    'subcategories': subcategories
+                }
+                
+                # 保存当前分类的子分类数据
+                subcategories_file = os.path.join(cache_dir, f"dicks_subcategories_{i+1}.json")
+                with open(subcategories_file, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'category': category_name,
+                        'url': category_url,
+                        'subcategories': subcategories
+                    }, f, ensure_ascii=False, indent=2)
+                logger.info(f"{category_name} 的子分类数据保存至: {subcategories_file}")
+                
+            except Exception as e:
+                logger.error(f"提取 {category.get('name', '未知')} 的子分类时出错: {str(e)}")
+        
+        # 保存所有分类数据
+        all_categories_file = os.path.join(cache_dir, "dicks_all_categories.json")
+        with open(all_categories_file, 'w', encoding='utf-8') as f:
+            json.dump(all_categories, f, ensure_ascii=False, indent=2)
+        logger.info(f"所有分类数据保存至: {all_categories_file}")
+    
+    def extract_api_urls(self):
+        """提取API URL"""
+        logger.info("尝试提取API URL...")
+        
+        try:
+            # 访问男士鞋类页面
+            url = "https://www.dickssportinggoods.com/f/all-mens-footwear"
+            logger.info(f"访问页面: {url}")
+            self.page.get(url)
+            
+            # 等待页面加载
+            logger.info("等待页面加载...")
+            time.sleep(5)
+            
+            # 保存页面截图
+            screenshot_path = os.path.join(cache_dir, "dicks_mens_footwear_screenshot.png")
+            self.page.get_screenshot(screenshot_path)
+            logger.info(f"页面截图保存至: {screenshot_path}")
+            
+            # 获取网络请求
+            logger.info("获取网络请求...")
+            api_urls = self.page.run_js('''
+                const performance = window.performance || window.mozPerformance || window.msPerformance || window.webkitPerformance || {};
+                const entries = performance.getEntries ? performance.getEntries() : [];
+                return entries
+                    .filter(entry => entry.initiatorType === 'fetch' || entry.initiatorType === 'xmlhttprequest')
+                    .filter(entry => entry.name.includes('api'))
+                    .map(entry => entry.name);
+            ''')
+            
+            if api_urls:
+                logger.info(f"找到 {len(api_urls)} 个API URL")
+                api_urls_file = os.path.join(cache_dir, "dicks_api_urls.json")
+                with open(api_urls_file, 'w', encoding='utf-8') as f:
+                    json.dump(api_urls, f, ensure_ascii=False, indent=2)
+                logger.info(f"API URL保存至: {api_urls_file}")
+            else:
+                logger.warning("未找到任何API URL")
+            
+            # 尝试提取页面中的JSON数据
+            logger.info("提取页面中的JSON数据...")
+            json_data = self.page.run_js('''
+                const data = {};
+                if (window.__INITIAL_STATE__) data.initialState = window.__INITIAL_STATE__;
+                if (window.__PRODUCT_LIST_STATE__) data.productListState = window.__PRODUCT_LIST_STATE__;
+                if (window.__PRELOADED_STATE__) data.preloadedState = window.__PRELOADED_STATE__;
+                return data;
+            ''')
+            
+            if json_data:
+                logger.info("成功提取页面中的JSON数据")
+                json_data_file = os.path.join(cache_dir, "dicks_page_json_data.json")
+                with open(json_data_file, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"页面JSON数据保存至: {json_data_file}")
+            else:
+                logger.warning("未找到页面中的JSON数据")
+            
+            return api_urls
+            
+        except Exception as e:
+            logger.error(f"提取API URL时出错: {str(e)}")
+            return []
 
 if __name__ == "__main__":
-    logger.info("开始爬取Dick's Sporting Goods分类数据")
+    crawler = DicksSportingGoodsCrawler()
     
-    # 爬取数据
-    result = crawl_categories()
+    # 爬取商品分类
+    logger.info("开始爬取Dick's Sporting Goods商品分类")
+    categories = crawler.crawl_categories()
     
-    if result:
-        logger.info("数据爬取成功")
-        logger.info("所有分类数据已保存到cache目录")
-        logger.info("您可以使用这些分类ID来爬取具体产品")
+    if categories:
+        logger.info(f"成功爬取 {len(categories)} 个商品分类")
+        logger.info("所有数据已保存到cache目录")
     else:
-        logger.error("数据爬取失败")
+        logger.error("爬取商品分类失败")
