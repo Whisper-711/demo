@@ -3,7 +3,7 @@ import json
 import time
 import logging
 from datetime import datetime
-from DrissionPage import ChromiumPage, ChromiumOptions
+from DrissionPage import ChromiumPage
 
 # 配置日志
 log_filename = f"dicks_drissionpage_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -27,19 +27,18 @@ class DicksSportingGoodsCrawler:
         """初始化爬虫"""
         logger.info("初始化DrissionPage")
         
-        # 配置ChromiumOptions
-        options = ChromiumOptions()
-        options.set_argument('--disable-blink-features=AutomationControlled')  # 禁用自动化控制检测
-        options.set_argument('--disable-infobars')  # 禁用信息栏
-        options.set_argument('--start-maximized')  # 最大化窗口
-        options.set_argument('--disable-extensions')  # 禁用扩展
-        options.set_argument('--disable-gpu')  # 禁用GPU加速
+        # 创建ChromiumPage实例
+        self.page = ChromiumPage()
+        
+        # 配置浏览器设置
+        self.page.set.window.size(1920, 1080)  # 设置窗口大小
+        self.page.set.window.maximized = True  # 最大化窗口
         
         # 设置用户代理
-        options.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        self.page.set.user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # 创建ChromiumPage实例
-        self.page = ChromiumPage(options=options)
+        # 禁用自动化控制检测
+        self.page.run_js('Object.defineProperty(navigator, "webdriver", {get: () => false});')
         
         # 设置超时时间
         self.page.set.timeouts(30, 30, 30)
@@ -72,7 +71,7 @@ class DicksSportingGoodsCrawler:
             categories = []
             
             # 尝试查找导航菜单
-            nav_elements = self.page.eles('css:.dsg-header-nav-menu a')
+            nav_elements = self.page.eles('.dsg-header-nav-menu a')
             if nav_elements:
                 logger.info(f"找到 {len(nav_elements)} 个导航链接")
                 
@@ -80,7 +79,7 @@ class DicksSportingGoodsCrawler:
                     try:
                         category = {
                             'name': element.text,
-                            'url': element.link,
+                            'url': element.attr('href'),
                         }
                         if category['name'] and category['url']:
                             categories.append(category)
@@ -91,7 +90,7 @@ class DicksSportingGoodsCrawler:
             if not categories:
                 logger.info("尝试其他选择器查找分类...")
                 # 尝试查找顶部导航
-                nav_elements = self.page.eles('css:.dsg-header-top-level-nav a')
+                nav_elements = self.page.eles('.dsg-header-top-level-nav a')
                 if nav_elements:
                     logger.info(f"找到 {len(nav_elements)} 个顶部导航链接")
                     
@@ -99,7 +98,7 @@ class DicksSportingGoodsCrawler:
                         try:
                             category = {
                                 'name': element.text,
-                                'url': element.link,
+                                'url': element.attr('href'),
                             }
                             if category['name'] and category['url']:
                                 categories.append(category)
@@ -172,7 +171,7 @@ class DicksSportingGoodsCrawler:
                 subcategories = []
                 
                 # 尝试查找子分类链接
-                subcategory_elements = self.page.eles('css:.dsg-left-nav-menu a, .dsg-category-list a')
+                subcategory_elements = self.page.eles('.dsg-left-nav-menu a, .dsg-category-list a')
                 
                 if subcategory_elements:
                     logger.info(f"在 {category_name} 分类中找到 {len(subcategory_elements)} 个子分类链接")
@@ -181,7 +180,7 @@ class DicksSportingGoodsCrawler:
                         try:
                             subcategory = {
                                 'name': element.text,
-                                'url': element.link,
+                                'url': element.attr('href'),
                             }
                             if subcategory['name'] and subcategory['url']:
                                 subcategories.append(subcategory)
