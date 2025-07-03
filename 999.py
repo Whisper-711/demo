@@ -57,72 +57,93 @@ class Paper:
             'insert_update_time': self.insert_update_time
         }
 
-class HTTPSession:
-    def __init__(self,timeout: int = 30):
-        self.session = requests.Session()
-        self.timeout = timeout
-        self.headers = {
+class BiorxivScraper:
+    def __init__(self, output_dir: str = "data", proxy: str = None):
+        self.output_dir = output_dir
+        self.run_date = datetime.datetime.now()
+        self.papers = []
+        self.proxy = proxy
+        self.timeout = 60
+        
+        # 基础请求头
+        self.base_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
             'Connection': 'keep-alive'
         }
+        
+        # 代理设置
+        self.proxies = None
+        if proxy:
+            self.proxies = {
+                'http': f'http://{proxy}',
+                'https': f'http://{proxy}'
+            }
 
-    def set_header(self,key:str,value:str):
-        self.headers[key] = value
+        # 确保输出目录存在
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # 初始化不同域名的请求头
+        self.detail_headers = self.base_headers.copy()
+        self.detail_headers.update({
+            'Host': 'www.biorxiv.org',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-Mode': 'navigate'
+        })
+        
+        self.connect_headers = self.base_headers.copy()
+        self.connect_headers.update({
+            'Host': 'connect.biorxiv.org',
+            'Referer': 'https://www.biorxiv.org/'
+        })
+        
+        self.js_headers = self.base_headers.copy()
+        self.js_headers.update({
+            'Host': 'd33xdlntwy0kbs.cloudfront.net',
+            'Referer': 'https://www.biorxiv.org/',
+            'Sec-Fetch-Site': 'cross-site',
+            'Sec-Fetch-Mode': 'no-cors'
+        })
 
-    def get(self,url:str, validate_str_list: List[str] = None):
+    def make_request(self, url: str, headers: Dict[str, str], validate_str_list: List[str] = None) -> str:
+        """发送HTTP请求并获取内容"""
         max_retries = 3
         retry_count = 0
-
+        
         while retry_count < max_retries:
             try:
-                response = self.session.get(url,headers = self.headers,timeout=self.timeout)
+                response = requests.get(
+                    url, 
+                    headers=headers, 
+                    proxies=self.proxies, 
+                    timeout=self.timeout
+                )
                 response.raise_for_status()
                 content = response.text
-
+                
                 if validate_str_list:
                     if all(validate_str in content for validate_str in validate_str_list):
                         return content
                     else:
                         missing = [s for s in validate_str_list if s not in content]
                         logger.warning(f"内容验证失败，缺少字符串: {missing}")
+                        retry_count += 1
                 else:
                     return content
             except (requests.RequestException, Exception) as e:
                 logger.error(f"请求失败：{url},错误：{str(e)}")
-
-class BiorxivScraper:
-    def __init__(self, output_dir: str = "data"):
-        self.output_dir = output_dir
-        self.run_date = datetime.datetime.now()
-        self.papers = []
-
-        # 确保输出目录存在
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # 初始化HTTP会话
-        self.detail_session = HTTPSession(timeout=60)
-        self.detail_session.set_header('Host', 'www.biorxiv.org')
-        self.detail_session.set_header('Sec-Fetch-Site', 'none')
-        self.detail_session.set_header('Sec-Fetch-Mode', 'navigate')
-
-        self.connect_session = HTTPSession(timeout=60)
-        self.connect_session.set_header('Host', 'connect.biorxiv.org')
-        self.connect_session.set_header('Referer', 'https://www.biorxiv.org/')
-
-        self.js_session = HTTPSession(timeout=60)
-        self.js_session.set_header('Host', 'd33xdlntwy0kbs.cloudfront.net')
-        self.js_session.set_header('Referer', 'https://www.biorxiv.org/')
-        self.js_session.set_header('Sec-Fetch-Site', 'cross-site')
-        self.js_session.set_header('Sec-Fetch-Mode', 'no-cors')
+                retry_count += 1
+                time.sleep(1)
+        
+        return ""
 
     def get_publish_text_dict(self):
         """获取发布文本类型的字典"""
         publish_text_dict = {}
         text_url = 'https://d33xdlntwy0kbs.cloudfront.net/cshl_custom.js'
 
-        page_content = self.js_session.get(text_url, validate_str_list=['pub_jnl'])
+        page_content = self.make_request(text_url, self.js_headers, validate_str_list=['pub_jnl'])
         soup = BeautifulSoup(page_content, 'html.parser')
         published_text_list = soup.select('div.pub_jnl')
 
@@ -142,7 +163,7 @@ class BiorxivScraper:
         """获取论文的发布信息文本"""
         url_paper_detail = f'https://connect.biorxiv.org/bx_pub_doi_get.php?doi={url_text}'
 
-        paper_content = self.connect_session.get(url_paper_detail, validate_str_list=['pub'])
+        paper_content = self.make_request(url_paper_detail, self.connect_headers, validate_str_list=['pub'])
         clean_content = (paper_content
                              .replace('\r\n\r\n\r\n\r\n', '')
                              .replace('(', '')
@@ -167,6 +188,17 @@ class BiorxivScraper:
                 '+y[B].pubdoi+"', pub_doi)
 
         return pub_text.replace("\'", "").replace("'", "")
+        
+    def get_posted_time(self, url_text: str) -> str:
+        """获取论文发布时间"""
+        url = f'https://www.biorxiv.org/content/{url_text}v1'
+        page_content = self.make_request(url, self.detail_headers)
+        if page_content:
+            soup = BeautifulSoup(page_content, 'html.parser')
+            posted_element = soup.select_one('.pane-content')
+            if posted_element:
+                return posted_element.text
+        return ""
 
     def scrape_search_results(self, keywords: List[str], max_pages: int = None) -> List[Paper]:
         """抓取搜索结果中的论文信息"""
@@ -184,7 +216,7 @@ class BiorxivScraper:
                 logger.info(f"处理页面 {page_index + 1}")
 
                 try:
-                    page_content = self.detail_session.get(url, validate_str_list=['highwire-search-results-list'])
+                    page_content = self.make_request(url, self.detail_headers, validate_str_list=['highwire-search-results-list'])
                     soup = BeautifulSoup(page_content, 'html.parser')
 
                     # 获取结果总数和总页数
@@ -304,15 +336,16 @@ class BiorxivScraper:
 
 def main():
     """主函数"""
-    # 创建爬虫实例
-    scraper = BiorxivScraper(output_dir="data")
+    # 创建爬虫实例，设置代理
+    proxy = "127.0.0.1:7897"
+    scraper = BiorxivScraper(output_dir="data", proxy=proxy)
 
     # 设置搜索关键词
     keywords = ['visium', '"10x" chromium']
 
     try:
         # 抓取数据
-        logger.info("开始抓取bioRxiv数据")
+        logger.info(f"开始抓取bioRxiv数据，使用代理: {proxy}")
         papers = scraper.scrape_search_results(keywords, max_pages=None)
 
         # 保存结果
