@@ -164,30 +164,37 @@ class BiorxivScraper:
         url_paper_detail = f'https://connect.biorxiv.org/bx_pub_doi_get.php?doi={url_text}'
 
         paper_content = self.make_request(url_paper_detail, self.connect_headers, validate_str_list=['pub'])
-        clean_content = (paper_content
-                             .replace('\r\n\r\n\r\n\r\n', '')
-                             .replace('(', '')
-                             .replace(')', '')
-                             .replace('\n\n\n\n\n\n', '')
-                             .replace('\n\n', ''))
-
-        json_data = json.loads(clean_content)
-        if not json_data.get('pub') or len(json_data['pub']) == 0:
+        if not paper_content:
             return 'None'
+            
+        try:
+            clean_content = (paper_content
+                                .replace('\r\n\r\n\r\n\r\n', '')
+                                .replace('(', '')
+                                .replace(')', '')
+                                .replace('\n\n\n\n\n\n', '')
+                                .replace('\n\n', ''))
 
-        pub_info = json_data['pub'][0]
-        published_type = pub_info.get('pub_type')
-        pub_doi = pub_info.get('pub_doi', '')
-        pub_journal = pub_info.get('pub_journal', '')
+            json_data = json.loads(clean_content)
+            if not json_data.get('pub') or len(json_data['pub']) == 0:
+                return 'None'
 
-        if not published_type:
+            pub_info = json_data['pub'][0]
+            published_type = pub_info.get('pub_type')
+            pub_doi = pub_info.get('pub_doi', '')
+            pub_journal = pub_info.get('pub_journal', '')
+
+            if not published_type:
+                return 'None'
+
+            template = pub_text_dict.get(published_type, pub_text_dict.get('None', 'None'))
+            pub_text = template.replace("'+y[B].pubjournal+'", pub_journal).replace(
+                    '+y[B].pubdoi+"', pub_doi)
+
+            return pub_text.replace("\'", "").replace("'", "")
+        except Exception as e:
+            logger.error(f"处理发布文本时出错: {str(e)}")
             return 'None'
-
-        template = pub_text_dict.get(published_type, pub_text_dict.get('None', 'None'))
-        pub_text = template.replace("'+y[B].pubjournal+'", pub_journal).replace(
-                '+y[B].pubdoi+"', pub_doi)
-
-        return pub_text.replace("\'", "").replace("'", "")
         
     def get_posted_time(self, url_text: str) -> str:
         """获取论文发布时间"""
@@ -195,15 +202,40 @@ class BiorxivScraper:
         page_content = self.make_request(url, self.detail_headers)
         if page_content:
             soup = BeautifulSoup(page_content, 'html.parser')
+            
+            # 尝试通过更精确的选择器获取发布日期
+            date_element = soup.select_one('.pane-1 .pane-content')
+            if date_element:
+                # 使用正则表达式提取日期格式
+                date_text = date_element.text.strip()
+                date_match = re.search(r'Posted\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(\d{4})', date_text)
+                if date_match:
+                    month = date_match.group(1)
+                    day = date_match.group(2)
+                    year = date_match.group(3)
+                    return f"{month} {day}, {year}"
+            
+            # 如果上面的方法失败，尝试其他选择器
             posted_element = soup.select_one('.pane-content')
             if posted_element:
-                return posted_element.text
+                date_text = posted_element.text.strip()
+                # 过滤掉不包含日期的文本
+                if "Search for this keyword" in date_text:
+                    return ""
+                return date_text
         return ""
 
-    def scrape_search_results(self, keywords: List[str], max_pages: int = None) -> List[Paper]:
-        """抓取搜索结果中的论文信息"""
+    def scrape_search_results(self, keywords: List[str], max_pages: int = None, max_papers: int = None) -> List[Paper]:
+        """抓取搜索结果中的论文信息
+        
+        Args:
+            keywords: 搜索关键词列表
+            max_pages: 最大页数限制
+            max_papers: 最大论文数量限制，用于测试
+        """
         pub_text_dict = self.get_publish_text_dict()
         run_timestamp = self.run_date.strftime("%Y-%m-%d %H:%M:%S")
+        total_papers_processed = 0
 
         for keyword in keywords:
             logger.info(f"开始抓取关键词 '{keyword}' 的数据")
@@ -211,6 +243,11 @@ class BiorxivScraper:
             total_page = 1
 
             while page_index < total_page:
+                # 检查是否达到最大论文数量限制
+                if max_papers and total_papers_processed >= max_papers:
+                    logger.info(f"已达到最大论文数量限制 ({max_papers})，停止抓取")
+                    return self.papers
+                
                 # 构建搜索URL
                 url = f'https://www.biorxiv.org/search/{parse.quote(keyword)}%20numresults%3A75%20sort%3Arelevance-rank?page={page_index}'
                 logger.info(f"处理页面 {page_index + 1}")
@@ -237,6 +274,11 @@ class BiorxivScraper:
                     logger.info(f"当前页面包含 {len(articles)} 篇文章")
 
                     for article_block in articles:
+                        # 检查是否达到最大论文数量限制
+                        if max_papers and total_papers_processed >= max_papers:
+                            logger.info(f"已达到最大论文数量限制 ({max_papers})，停止抓取")
+                            return self.papers
+                            
                         try:
                             paper = Paper()
 
@@ -276,21 +318,37 @@ class BiorxivScraper:
 
                                 # 获取发布时间
                                 posted_time_raw = self.get_posted_time(url_text)
-                                if 'Youarenotauthorizedtoaccessthispage' in posted_time_raw:
+                                if not posted_time_raw or 'Youarenotauthorizedtoaccessthispage' in posted_time_raw:
                                     paper.posted_time_raw = None
                                     paper.posted_time = None
                                 else:
                                     paper.posted_time_raw = posted_time_raw
                                     time_raw = (posted_time_raw
-                                                .replace(' ', '')
-                                                .replace('\xa0', '')
-                                                .replace('NBSP', '')
+                                                .replace('\xa0', ' ')
+                                                .replace('NBSP', ' ')
                                                 .strip('.'))
                                     try:
-                                        time_format = datetime.datetime.strptime(time_raw, '%B%d,%Y')
-                                        paper.posted_time = datetime.datetime.strftime(time_format, '%Y-%m-%d %H:%M:%S')
-                                    except ValueError:
-                                        logger.warning(f"无法解析日期: {time_raw}")
+                                        # 尝试多种日期格式
+                                        date_formats = [
+                                            '%B %d, %Y',  # January 1, 2020
+                                            '%B%d,%Y',    # January1,2020
+                                        ]
+                                        
+                                        parsed_date = None
+                                        for date_format in date_formats:
+                                            try:
+                                                parsed_date = datetime.datetime.strptime(time_raw, date_format)
+                                                break
+                                            except ValueError:
+                                                continue
+                                        
+                                        if parsed_date:
+                                            paper.posted_time = datetime.datetime.strftime(parsed_date, '%Y-%m-%d %H:%M:%S')
+                                        else:
+                                            logger.warning(f"无法解析日期: {time_raw}")
+                                            paper.posted_time = None
+                                    except Exception as e:
+                                        logger.warning(f"日期解析错误: {time_raw}, 错误: {str(e)}")
                                         paper.posted_time = None
 
                                 # 获取发布文本
@@ -301,7 +359,8 @@ class BiorxivScraper:
                                 paper.insert_update_time = run_timestamp
 
                                 self.papers.append(paper)
-                                logger.info(f"成功处理论文: {paper.title}")
+                                total_papers_processed += 1
+                                logger.info(f"成功处理论文: {paper.title} ({total_papers_processed}/{max_papers if max_papers else '无限制'})")
 
                         except Exception as e:
                             logger.error(f"处理文章时出错: {str(e)}")
@@ -333,25 +392,96 @@ class BiorxivScraper:
         logger.info(f"数据已保存到 {filepath}, 共 {len(self.papers)} 篇论文")
 
         return filepath
+        
+    def save_to_json(self, filename_template: str = "biorxiv_{}.json") -> str:
+        """将抓取的论文保存到JSON文件"""
+        if not self.papers:
+            logger.warning("没有论文可保存")
+            return None
+
+        filename = filename_template.format(self.run_date.strftime("%Y-%m-%d"))
+        filepath = os.path.join(self.output_dir, filename)
+
+        # 转换论文列表为字典列表
+        papers_dict = [paper.to_dict() for paper in self.papers]
+        
+        # 保存到JSON
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(papers_dict, f, ensure_ascii=False, indent=2)
+            
+        logger.info(f"数据已保存到 {filepath}, 共 {len(self.papers)} 篇论文")
+
+        return filepath
+
+def csv_to_json(csv_file: str, json_file: str = None) -> str:
+    """将CSV文件转换为JSON文件
+    
+    Args:
+        csv_file: CSV文件路径
+        json_file: 输出的JSON文件路径，如果为None则自动根据CSV文件名生成
+        
+    Returns:
+        生成的JSON文件路径
+    """
+    if not os.path.exists(csv_file):
+        logger.error(f"CSV文件不存在: {csv_file}")
+        return None
+        
+    try:
+        # 读取CSV文件
+        df = pd.read_csv(csv_file)
+        
+        # 如果没有指定JSON文件路径，则自动生成
+        if json_file is None:
+            json_file = os.path.splitext(csv_file)[0] + '.json'
+            
+        # 将DataFrame转换为字典列表
+        records = df.to_dict(orient='records')
+        
+        # 保存为JSON文件
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+            
+        logger.info(f"CSV文件 {csv_file} 已成功转换为JSON文件 {json_file}")
+        return json_file
+    except Exception as e:
+        logger.error(f"CSV转JSON失败: {str(e)}")
+        return None
 
 def main():
     """主函数"""
     # 创建爬虫实例，设置代理
-    proxy = "127.0.0.1:7897"
+    proxy = "127.0.0.1:7890"
     scraper = BiorxivScraper(output_dir="data", proxy=proxy)
 
     # 设置搜索关键词
     keywords = ['visium', '"10x" chromium']
+    
+    # 设置测试模式参数
+    max_papers = 2  # 设置为None可以抓取所有论文，或者设置一个数字来限制数量
+    max_pages = 1    # 设置为None可以抓取所有页面，或者设置一个数字来限制页数
 
     try:
         # 抓取数据
         logger.info(f"开始抓取bioRxiv数据，使用代理: {proxy}")
-        papers = scraper.scrape_search_results(keywords, max_pages=None)
+        logger.info(f"测试模式: 最多抓取 {max_papers if max_papers else '无限制'} 篇论文，最多 {max_pages if max_pages else '无限制'} 页")
+        
+        papers = scraper.scrape_search_results(keywords, max_pages=max_pages, max_papers=max_papers)
 
         # 保存结果
         if papers:
+            # 保存为CSV
             csv_path = scraper.save_to_csv()
-            logger.info(f"爬取完成，共获取 {len(papers)} 篇论文，数据已保存到 {csv_path}")
+            
+            # 保存为JSON
+            json_path = scraper.save_to_json()
+            
+            logger.info(f"爬取完成，共获取 {len(papers)} 篇论文")
+            logger.info(f"数据已保存到CSV: {csv_path}")
+            logger.info(f"数据已保存到JSON: {json_path}")
+            
+            # 也可以使用csv_to_json函数将已有的CSV转换为JSON
+            # csv_to_json(csv_path)
         else:
             logger.warning("未找到任何论文")
 
