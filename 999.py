@@ -286,11 +286,19 @@ if __name__ == '__main__':
 
 
 
-
-    def get_posted_time(self, url_text):
-        url_detail = 'https://www.biorxiv.org/content/{}v1'.format(url_text)
-        detailed_page = self.clever_download_page(url_detail, manager=self.detail_manager,
-                                                  validate_str_list=['pane-content'])
-        soup_posted = BeautifulSoup(detailed_page, 'html.parser')
+ def download_page(self, url, headers, data=None, page_name=None):
+        time.sleep(random.uniform(1, 3))  # 随机延迟 1~3 秒
+        saved_content = self.dumper.load(url=url, file_name=page_name)
+        if saved_content and self.blocked_checker.is_bad_page(saved_content):
+            page = saved_content
+        else:
+            response = self.downloader.get(url, headers=headers)
+            if not self.blocked_checker.is_blocked(response):
+                page = response.text
+                self.dumper.save(page, url=url, file_name=page_name)
+            else:
+                self.logger.error('is blocked', url)
+                page = 'blocked'
+        return page
         post_time_str = soup_posted.select_one('div.pane-1 div.pane-content').text.strip('\n Posted').replace(' ', '')
         return post_time_str
