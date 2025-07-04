@@ -275,3 +275,22 @@ class BioScraper:
 if __name__ == '__main__':
     a = BioScraper()
     a.on_run() 
+
+
+
+
+
+
+
+
+
+
+
+
+    def get_posted_time(self, url_text):
+        url_detail = 'https://www.biorxiv.org/content/{}v1'.format(url_text)
+        detailed_page = self.clever_download_page(url_detail, manager=self.detail_manager,
+                                                  validate_str_list=['pane-content'])
+        soup_posted = BeautifulSoup(detailed_page, 'html.parser')
+        post_time_str = soup_posted.select_one('div.pane-1 div.pane-content').text.strip('\n Posted').replace(' ', '')
+        return post_time_str
