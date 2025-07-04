@@ -267,6 +267,10 @@ class BioScraper:
                         writer.writerow(article_info)
 
                 self.logger.info(f"Data for {key_word} page {page_index} has been written to {csv_file_name}")
+                
+                # Add a longer random delay between pages
+                self.logger.info(f"Taking a break before proceeding to next page...")
+                time.sleep(random.uniform(10, 20))
 
 if __name__ == '__main__':
     a = BioScraper()
