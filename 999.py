@@ -1,17 +1,11 @@
-import requests
-from bs4 import BeautifulSoup
-import json
-import datetime
-import re
-import math
-import pandas as pd
 import logging
+import math
 import os
-from urllib import parse
-from pathlib import Path
+import re
 import time
-from typing import Dict, List, Optional, Tuple, Any
 import random
+from pathlib import Path
+from urllib import parse
 import csv
 from bs4 import BeautifulSoup
 from degree72.implementations.blocked_checkers.request_blocked_checker import RequestBlockedChecker
@@ -31,80 +25,73 @@ logging.basicConfig(
 logger = logging.getLogger("BiorxivScraper")
 
 
-class Paper:
+class BioScraper:
     def __init__(self):
-        self.search_keyword = None
-        self.title = None
-        self.authors = None
-        self.doi_date = None
-        self.doi_ID = None
-        self.detail_url = None
-        self.posted_time = None
-        self.posted_time_raw = None
-        self.publish_text = None
-        self.source_url = None
-        self.run_id = None
-        self.run_date = None
-        self.insert_update_time = None
 
-    def to_dict(self):
-        """将论文对象转换为字典形式"""
-        return {
-            'search_keyword': self.search_keyword,
-            'title': self.title,
-            'authors': self.authors,
-            'doi_date': self.doi_date,
-            'doi_ID': self.doi_ID,
-            'detail_url': self.detail_url,
-            'posted_time': self.posted_time,
-            'posted_time_raw': self.posted_time_raw,
-            'publish_text': self.publish_text,
-            'source_url': self.source_url,
-            'run_id': self.run_id,
-            'run_date': self.run_date,
-            'insert_update_time': self.insert_update_time
+        self.logger = logging.getLogger("BiorxivScraper")
+
+        self.blocked_checker = RequestBlockedChecker()
+
+        self.proxy = {
+            'http': 'http://127.0.0.1:7897',
+            'https': 'http://127.0.0.1:7897'
         }
 
+        # 初始化下载器时传入代理
+        self.downloader = RequestDownloader(
+            blocked_checker=self.blocked_checker,
+            proxies=self.proxy  # 添加代理配置
+        )
 
-class BiorxivScraper:
-    def __init__(self, output_dir: str = "data", proxy: str = None):
-        self.output_dir = output_dir
-        self.run_date = datetime.datetime.now()
-        self.papers = []
-        self.proxy = proxy
-        self.timeout = 60
+        storage_dir = Path(__file__).parent / "biorxiv_data"
+        self.dumper = LocalDumpManager(
+            project="biorxiv_scraper",
+            base_dir=str(storage_dir)
+        )
 
-        # 基础请求头
+        self.dao = CsvDao()
+        
+        # Multiple realistic User-Agents
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
+        ]
+        
+        # More sophisticated base headers
         self.base_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+            'User-Agent': random.choice(self.user_agents),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-            'Connection': 'keep-alive'
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Sec-Ch-Ua': '"Not A(Brand";v="99", "Google Chrome";v="126", "Chromium";v="126"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Upgrade-Insecure-Requests': '1',
+            'Cache-Control': 'max-age=0',
+            'Cookie':'_ga=GA1.1.57067.1751437669; SSESS1dd6867f1a1b90340f573dcdef3076bc=RYWR8fgx14aOl6stwKKM1EQtAUAAR-HWXGndXQ3Lw9U; cookie-agreed=2; __cf_bm=mAMkB1tzXAM.zJSwOZIL9OZd_4aNOLaAUr2le2LXTOY-1751591942-1.0.1.1-usIE2396WjAQZ_kmhjJ7_kScjrxftn5g6mmvlGPQpd4Ygp1gGCPVzXESzeavz0pUIt3_ZEG7v_SWiKTxiCgPUXCuW2LMCD5qtHjVp2z1eZk; has_js=1; _ga_RZD586MC3Q=GS2.1.s1751591942$o3$g1$t1751591948$j54$l0$h0'
         }
 
-        # 代理设置
-        self.proxies = None
-        if proxy:
-            self.proxies = {
-                'http': f'http://{proxy}',
-                'https': f'http://{proxy}'
-            }
-
-        # 确保输出目录存在
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-        # 初始化不同域名的请求头
         self.detail_headers = self.base_headers.copy()
         self.detail_headers.update({
             'Host': 'www.biorxiv.org',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-Mode': 'navigate'
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-User': '?1',
+            'Referer': 'https://www.biorxiv.org/'
         })
 
         self.connect_headers = self.base_headers.copy()
         self.connect_headers.update({
             'Host': 'connect.biorxiv.org',
-            'Referer': 'https://www.biorxiv.org/'
+            'Referer': 'https://www.biorxiv.org/',
+            'Origin': 'https://www.biorxiv.org',
+            'Sec-Fetch-Site': 'same-site',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty'
         })
 
         self.js_headers = self.base_headers.copy()
@@ -112,103 +99,74 @@ class BiorxivScraper:
             'Host': 'd33xdlntwy0kbs.cloudfront.net',
             'Referer': 'https://www.biorxiv.org/',
             'Sec-Fetch-Site': 'cross-site',
-            'Sec-Fetch-Mode': 'no-cors'
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Dest': 'script',
+            'Accept': '*/*'
         })
 
-    def make_request(self, url: str, headers: Dict[str, str], validate_str_list: List[str] = None) -> str:
-        """发送HTTP请求并获取内容"""
-        max_retries = 3
-        retry_count = 0
 
-        while retry_count < max_retries:
-            try:
-                response = requests.get(
-                    url,
-                    headers=headers,
-                    proxies=self.proxies,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                content = response.text
-
-                if validate_str_list:
-                    if all(validate_str in content for validate_str in validate_str_list):
-                        return content
-                    else:
-                        missing = [s for s in validate_str_list if s not in content]
-                        logger.warning(f"内容验证失败，缺少字符串: {missing}")
-                        retry_count += 1
-                else:
-                    return content
-            except (requests.RequestException, Exception) as e:
-                logger.error(f"请求失败：{url},错误：{str(e)}")
-                retry_count += 1
-                time.sleep(1)
-
-        return ""
-
-    def get_publish_text_dict(self):
-        """获取发布文本类型的字典"""
+    def dict_publish_text(self):
         publish_text_dict = {}
-        text_url = 'https://d33xdlntwy0kbs.cloudfront.net/cshl_custom.js'
+        # 获取种类信息
+        url = 'https://d33xdlntwy0kbs.cloudfront.net/cshl_custom.js'
+        response = self.downloader.get(url, headers=self.js_headers)
 
-        page_content = self.make_request(text_url, self.js_headers, validate_str_list=['pub_jnl'])
-        soup = BeautifulSoup(page_content, 'html.parser')
-        published_text_list = soup.select('div.pub_jnl')
+        if hasattr(response, 'text'):
+            page_published_text = response.text
+        else:
+            page_published_text = str(response)
 
-        for text_element in published_text_list:
-            pub_text = text_element.text
+        # 解析内容
+        soup_published_text = BeautifulSoup(page_published_text, 'html.parser')
+        published_text_list = soup_published_text.select('div.pub_jnl')
+
+        for published_text_raw in published_text_list:
+            pub_text = published_text_raw.text
             if pub_text.startswith('This '):
                 publish_text_dict['None'] = pub_text
             else:
-                match = re.search(r'Now (\w+) ', pub_text)
-                if match:
-                    pub_type = match.group(1)
-                    publish_text_dict[pub_type] = pub_text
-
+                check_pub_type = re.search(r'Now (\w+) ', pub_text).groups(1)[0]
+                publish_text_dict[check_pub_type] = pub_text
         return publish_text_dict
 
-    def get_pub_text(self, url_text: str, pub_text_dict: Dict[str, str]) -> str:
-        """获取论文的发布信息文本"""
-        url_paper_detail = f'https://connect.biorxiv.org/bx_pub_doi_get.php?doi={url_text}'
+    def _rotate_headers(self, headers):
+        """Rotate user-agent and update headers to appear more human-like"""
+        new_headers = headers.copy()
+        new_headers['User-Agent'] = random.choice(self.user_agents)
+        
+        # Add slightly random accept headers
+        accept_variations = [
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7'
+        ]
+        new_headers['Accept'] = random.choice(accept_variations)
+        return new_headers
 
-        paper_content = self.make_request(url_paper_detail, self.connect_headers, validate_str_list=['pub'])
-        if not paper_content:
-            return 'None'
-
-        try:
-            clean_content = (paper_content
-                             .replace('\r\n\r\n\r\n\r\n', '')
-                             .replace('(', '')
-                             .replace(')', '')
-                             .replace('\n\n\n\n\n\n', '')
-                             .replace('\n\n', ''))
-
-            json_data = json.loads(clean_content)
-            if not json_data.get('pub') or len(json_data['pub']) == 0:
-                return 'None'
-
-            pub_info = json_data['pub'][0]
-            published_type = pub_info.get('pub_type')
-            pub_doi = pub_info.get('pub_doi', '')
-            pub_journal = pub_info.get('pub_journal', '')
-
-            if not published_type:
-                return 'None'
-
-            template = pub_text_dict.get(published_type, pub_text_dict.get('None', 'None'))
-            pub_text = template.replace("'+y[B].pubjournal+'", pub_journal).replace(
-                '+y[B].pubdoi+"', pub_doi)
-
-            return pub_text.replace("\'", "").replace("'", "")
-        except Exception as e:
-            logger.error(f"处理发布文本时出错: {str(e)}")
-            return 'None'
+    def download_page(self, url, headers, data=None, page_name=None):
+        # Add random delay between 2-5 seconds to mimic human behavior
+        time.sleep(random.uniform(2, 5))
+        
+        # Rotate headers for each request
+        rotated_headers = self._rotate_headers(headers)
+        
+        saved_content = self.dumper.load(url=url, file_name=page_name)
+        if saved_content and self.blocked_checker.is_bad_page(saved_content):
+            page = saved_content
+        else:
+            response = self.downloader.get(url, headers=rotated_headers)
+            if not self.blocked_checker.is_blocked(response):
+                page = response.text
+                self.dumper.save(page, url=url, file_name=page_name)
+            else:
+                self.logger.error(f'Request blocked for URL: {url}')
+                page = 'blocked'
+        return page
 
     def get_posted_time(self, url_text: str) -> str:
         """获取论文发布时间"""
         url = f'https://www.biorxiv.org/content/{url_text}v1'
-        page_content = self.make_request(url, self.detail_headers)
+        page_content = self.download_page(url, headers=self.detail_headers)
         if page_content:
             soup = BeautifulSoup(page_content, 'html.parser')
 
@@ -226,220 +184,90 @@ class BiorxivScraper:
                     year = date_match.group(3)
                     return f"{month} {day}, {year}"
 
-            # 如果上面的方法失败，尝试其他选择器
-            posted_element = soup.select_one('.pane-content')
-            if posted_element:
-                date_text = posted_element.text.strip()
-                # 过滤掉不包含日期的文本
-                if "Search for this keyword" in date_text:
-                    return ""
-                return date_text
-        return ""
+    def get_pub_text(self, url_text: str, pub_text_dict: dict) -> str:
+        """获取论文摘要"""
+        url = f'https://connect.biorxiv.org/bx_pub_doi_get.php?doi={url_text}'
+        page_content = self.download_page(url, headers=self.connect_headers)
+        if page_content:
+            soup = BeautifulSoup(page_content, 'html.parser')
+            pub_text = soup.select_one('div.pub_jnl').text
+            if pub_text.startswith('This '):
+                pub_text = pub_text_dict['None']
+            else:
+                check_pub_type = re.search(r'Now (\w+) ', pub_text).groups(1)[0]
+                pub_text = pub_text_dict[check_pub_type]
+            return pub_text
 
-    def scrape_search_results(self, keywords: List[str], max_pages: int = None, max_papers: int = None) -> List[Paper]:
-        """抓取搜索结果中的论文信息
-
-        Args:
-            keywords: 搜索关键词列表
-            max_pages: 最大页数限制
-            max_papers: 最大论文数量限制，用于测试
-        """
-        pub_text_dict = self.get_publish_text_dict()
-        run_timestamp = self.run_date.strftime("%Y-%m-%d %H:%M:%S")
-        total_papers_processed = 0
-
-        for keyword in keywords:
-            logger.info(f"开始抓取关键词 '{keyword}' 的数据")
-            page_index = 0
+    def on_run(self,**kwargs):
+        pub_text_dict = self.dict_publish_text()
+        key_words = ['visium', '"10x" chromium']
+        for key_word in key_words:
+            page_index = -1
             total_page = 1
+            while page_index < int(total_page) - 1:
+                page_index += 1
+                url = 'https://www.biorxiv.org/search/{}%20numresults%3A75%20sort%3Arelevance-rank?page={}'.format(
+                    parse.quote(key_word), page_index)
 
-            while page_index < total_page:
-                # 检查是否达到最大论文数量限制
-                if max_papers and total_papers_processed >= max_papers:
-                    logger.info(f"已达到最大论文数量限制 ({max_papers})，停止抓取")
-                    return self.papers
+                # Set referer to simulate coming from homepage for first page, or previous page for subsequent pages
+                temp_headers = self.detail_headers.copy()
+                if page_index == 0:
+                    temp_headers['Referer'] = 'https://www.biorxiv.org/'
+                else:
+                    temp_headers['Referer'] = 'https://www.biorxiv.org/search/{}%20numresults%3A75%20sort%3Arelevance-rank?page={}'.format(
+                        parse.quote(key_word), page_index-1)
 
-                # 构建搜索URL
-                url = f'https://www.biorxiv.org/search/{parse.quote(keyword)}%20numresults%3A75%20sort%3Arelevance-rank?page={page_index}'
-                logger.info(f"处理页面 {page_index + 1}")
+                page = self.download_page(url, headers=temp_headers)
+                soup = BeautifulSoup(page, 'html.parser')
+                
+                # Check if we got a valid page
+                result_summary = soup.select_one('div.highwire-search-summary')
+                if not result_summary:
+                    self.logger.error(f"Failed to get valid results page for keyword '{key_word}' page {page_index}")
+                    continue
+                    
+                result_text = result_summary.text
+                total_results = int(re.search(r'([\d,]+)\sResults', result_text).group(1).replace(",", ""))
+                total_page = math.ceil(total_results / 75)
+                articles = soup.select(".highwire-search-results-list > li")
+                self.logger.info(f"processing {page_index * 75}--{total_results}")
+                articles_storage = []
 
-                try:
-                    page_content = self.make_request(url, self.detail_headers,
-                                                     validate_str_list=['highwire-search-results-list'])
-                    soup = BeautifulSoup(page_content, 'html.parser')
+                for article in articles:
+                    title = article.select_one(".highwire-cite-linked-title > .highwire-cite-title").text
+                    date_id = article.select_one(".highwire-cite-metadata-pages").text
+                    authors = article.select_one(".highwire-cite-authors").text
+                    doi_label = article.select_one(".doi_label").next_sibling
+                    url_text = doi_label.replace(' ', '')
 
-                    # 获取结果总数和总页数
-                    summary_text = soup.select_one('div.highwire-search-summary').text
-                    total_results_match = re.search(r'([\d,]+)\sResults', summary_text)
+                    # 提取更多详细信息
+                    posted_time = self.get_posted_time(url_text)
+                    pub_text = self.get_pub_text(url_text, pub_text_dict)
 
-                    if total_results_match:
-                        total_results = int(total_results_match.group(1).replace(",", ""))
-                        total_page = math.ceil(total_results / 75)
+                    # 存储文章信息
+                    article_info = {
+                        'title': title,
+                        'date': date_id,
+                        'authors': authors,
+                        'doi': url_text,
+                        'posted_time': posted_time,
+                        'publication_text': pub_text
+                    }
+                    articles_storage.append(article_info)
+                
+                # After processing each page, add a longer delay to avoid detection
+                time.sleep(random.uniform(5, 10))
+                
+                csv_file_name = f"articles_{key_word}_{page_index}.csv"
+                with open(csv_file_name, 'w', newline='', encoding='utf-8') as csvfile:
+                    fieldnames = ['title', 'date', 'authors', 'doi', 'posted_time', 'publication_text']
+                    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for article_info in articles_storage:
+                        writer.writerow(article_info)
 
-                        if max_pages and max_pages < total_page:
-                            total_page = max_pages
+                self.logger.info(f"Data for {key_word} page {page_index} has been written to {csv_file_name}")
 
-                        logger.info(f"找到 {total_results} 个结果，共 {total_page} 页")
-
-                    # 处理每篇文章
-                    articles = soup.select(".highwire-search-results-list > li")
-                    logger.info(f"当前页面包含 {len(articles)} 篇文章")
-
-                    for article_block in articles:
-                        # 检查是否达到最大论文数量限制
-                        if max_papers and total_papers_processed >= max_papers:
-                            logger.info(f"已达到最大论文数量限制 ({max_papers})，停止抓取")
-                            return self.papers
-
-                        try:
-                            paper = Paper()
-
-                            # 提取基本信息
-                            title_element = article_block.select_one(
-                                ".highwire-cite-linked-title > .highwire-cite-title")
-                            if title_element:
-                                paper.title = title_element.text
-
-                            date_id_element = article_block.select_one(".highwire-cite-metadata-pages")
-                            if date_id_element:
-                                date_id = date_id_element.text
-
-                            authors_element = article_block.select_one(".highwire-cite-authors")
-                            if authors_element:
-                                paper.authors = authors_element.text
-
-                            doi_label_element = article_block.select_one(".doi_label")
-                            if doi_label_element and doi_label_element.next_sibling:
-                                doi_text = doi_label_element.next_sibling
-                                url_text = doi_text.replace('https://doi.org/', '').replace(' ', '')
-
-                                # 设置论文基本属性
-                                paper.source_url = url
-                                paper.detail_url = f'https://www.biorxiv.org/content/{url_text}v1'
-                                paper.search_keyword = keyword
-
-                                # 处理日期和ID
-                                date_id = date_id.split(";")[0]
-                                if "." in date_id:
-                                    paper.doi_ID = date_id.split(".")[-1]
-                                    date_raw = date_id.rsplit('.', 1)[0]
-                                    paper.doi_date = str(datetime.datetime.strptime(date_raw, '%Y.%m.%d').date())
-                                else:
-                                    paper.doi_ID = date_id
-                                    paper.doi_date = None
-
-                                # 获取发布时间
-                                posted_time_raw = self.get_posted_time(url_text)
-                                if not posted_time_raw or 'Youarenotauthorizedtoaccessthispage' in posted_time_raw:
-                                    paper.posted_time_raw = None
-                                    paper.posted_time = None
-                                else:
-                                    paper.posted_time_raw = posted_time_raw
-                                    time_raw = (posted_time_raw
-                                                .replace('\xa0', ' ')
-                                                .replace('NBSP', ' ')
-                                                .strip('.'))
-                                    try:
-                                        # 尝试多种日期格式
-                                        date_formats = [
-                                            '%B %d, %Y',  # January 1, 2020
-                                            '%B%d,%Y',  # January1,2020
-                                        ]
-
-                                        parsed_date = None
-                                        for date_format in date_formats:
-                                            try:
-                                                parsed_date = datetime.datetime.strptime(time_raw, date_format)
-                                                break
-                                            except ValueError:
-                                                continue
-
-                                        if parsed_date:
-                                            paper.posted_time = datetime.datetime.strftime(parsed_date,
-                                                                                           '%Y-%m-%d %H:%M:%S')
-                                        else:
-                                            logger.warning(f"无法解析日期: {time_raw}")
-                                            paper.posted_time = None
-                                    except Exception as e:
-                                        logger.warning(f"日期解析错误: {time_raw}, 错误: {str(e)}")
-                                        paper.posted_time = None
-
-                                # 获取发布文本
-                                paper.publish_text = self.get_pub_text(url_text, pub_text_dict)
-
-                                paper.run_id = run_timestamp
-                                paper.run_date = run_timestamp
-                                paper.insert_update_time = run_timestamp
-
-                                self.papers.append(paper)
-                                total_papers_processed += 1
-                                logger.info(
-                                    f"成功处理论文: {paper.title} ({total_papers_processed}/{max_papers if max_papers else '无限制'})")
-
-                        except Exception as e:
-                            logger.error(f"处理文章时出错: {str(e)}")
-
-                    page_index += 1
-                    time.sleep(2)
-
-                except Exception as e:
-                    logger.error(f"处理搜索页面时出错: {str(e)}")
-                    break
-
-        return self.papers
-
-    def save_to_csv(self, filename_template: str = "biorxiv_{}.csv") -> str:
-        """将抓取的论文保存到CSV文件"""
-        if not self.papers:
-            logger.warning("没有论文可保存")
-            return None
-
-        filename = filename_template.format(self.run_date.strftime("%Y-%m-%d"))
-        filepath = os.path.join(self.output_dir, filename)
-
-        # 转换论文列表为DataFrame
-        papers_dict = [paper.to_dict() for paper in self.papers]
-        df = pd.DataFrame(papers_dict)
-
-        # 保存到CSV
-        df.to_csv(filepath, index=False)
-        logger.info(f"数据已保存到 {filepath}, 共 {len(self.papers)} 篇论文")
-
-        return filepath
-
-
-
-def main():
-    """主函数"""
-    # 创建爬虫实例，设置代理
-    proxy = "127.0.0.1:7890"
-    scraper = BiorxivScraper(output_dir="data", proxy=proxy)
-
-    # 设置搜索关键词
-    keywords = ['visium', '"10x" chromium']
-
-    # 设置测试模式参数
-    max_papers = 5  # 设置为None抓取所有论文
-    max_pages = 1  # 设置为None抓取所有页面
-
-    try:
-        # 抓取数据
-        logger.info(f"开始抓取bioRxiv数据，使用代理: {proxy}")
-        logger.info(
-            f"测试模式: 最多抓取 {max_papers if max_papers else '无限制'} 篇论文，最多 {max_pages if max_pages else '无限制'} 页")
-
-        papers = scraper.scrape_search_results(keywords, max_pages=max_pages, max_papers=max_papers)
-
-        # 保存结果
-        if papers:
-            csv_path = scraper.save_to_csv()
-            logger.info(f"爬取完成，共获取 {len(papers)} 篇论文，数据已保存到 {csv_path}")
-        else:
-            logger.warning("未找到任何论文")
-
-    except Exception as e:
-        logger.error(f"程序运行出错: {str(e)}")
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    a = BioScraper()
+    a.on_run() 
