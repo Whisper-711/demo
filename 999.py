@@ -286,19 +286,63 @@ if __name__ == '__main__':
 
 
 
- def download_page(self, url, headers, data=None, page_name=None):
-        time.sleep(random.uniform(1, 3))  # 随机延迟 1~3 秒
-        saved_content = self.dumper.load(url=url, file_name=page_name)
-        if saved_content and self.blocked_checker.is_bad_page(saved_content):
-            page = saved_content
-        else:
-            response = self.downloader.get(url, headers=headers)
-            if not self.blocked_checker.is_blocked(response):
-                page = response.text
-                self.dumper.save(page, url=url, file_name=page_name)
-            else:
-                self.logger.error('is blocked', url)
-                page = 'blocked'
-        return page
-        post_time_str = soup_posted.select_one('div.pane-1 div.pane-content').text.strip('\n Posted').replace(' ', '')
-        return post_time_str
+    def on_run(self, **kwargs):
+        pub_text_dict = self.dict_publish_text()
+        key_words = ['visium', '"10x" chromium']
+        for key_word in key_words:
+            page_index = -1
+            total_page = 1
+            while page_index < int(total_page) - 1:
+                page_index += 1
+                # 'https://www.biorxiv.org/search/chromium%20numresults%3A75%20sort%3Arelevance-rank?page=1
+                url = 'https://www.biorxiv.org/search/{}%20numresults%3A75%20sort%3Arelevance-rank?page={}'.format(
+                    parse.quote(key_word), page_index)
+
+                page = self.clever_download_page(url, self.detail_manager, validate_str_list=['highwire-search-results-list'])
+                soup = BeautifulSoup(page, 'html.parser')
+                result_text = soup.select_one('div.highwire-search-summary').text
+                total_results = int(re.search(r'([\d,]+)\sResults', result_text).group(1).replace(",", ""))
+                total_page = math.ceil(total_results / 75)
+                # total_page = 10 # only for debug
+                articles = soup.select(".highwire-search-results-list > li")
+                self.log.info("processing", "{}--{}".format(page_index * 75, total_results))
+                for article_block in articles:
+                    try:
+                        en = Entity()
+                        title = article_block.select_one(".highwire-cite-linked-title > .highwire-cite-title").text
+                        date_id = article_block.select_one(".highwire-cite-metadata-pages").text
+                        authors = article_block.select_one(".highwire-cite-authors").text
+                        doi_label = article_block.select_one(".doi_label").next_sibling
+                        url_text = doi_label.replace('https://doi.org/', '').replace(' ', '')
+
+                        en.source_url = url
+                        en.detail_url = 'https://www.biorxiv.org/content/{}v1'.format(url_text)
+                        en.search_keyword = key_word
+                        en.title = title
+                        en.authors = authors
+                        date_id = date_id.split(";")[0]
+                        if "." in date_id:
+                            en.doi_ID = date_id.split(".")[-1]
+                            date_raw = date_id.rsplit('.', 1)[0]
+                            en.doi_date = str(datetime.datetime.strptime(date_raw, '%Y.%m.%d').date())
+                        else:
+                            en.doi_ID = date_id
+                            en.doi_date = None
+                        #   August 06, 2021. 是posted_time_raw的举例
+                        posted_time_raw = self.get_posted_time(url_text)
+                        check_str = 'Youarenotauthorizedtoaccessthispage'
+                        if check_str in posted_time_raw:
+                            # continue
+                            en.posted_time_raw = None
+                            en.posted_time = None
+                        else:
+                            en.posted_time_raw = posted_time_raw
+                            time_raw = posted_time_raw.replace(' ', '').replace('\xa0', '').replace('NBSP', '').strip('.')#.strip(' ')
+                            time_format = datetime.datetime.strptime(time_raw, '%B%d,%Y')
+                            en.posted_time = datetime.datetime.strftime(time_format, '%Y-%m-%d %H:%M:%S')
+                        en.publish_text = self.get_pub_text(url_text, pub_text_dict)
+                        self._dao.save(en)
+
+                    except Exception as e:
+
+                        self.log.error("failed to process article block", "{}--{}".format(str(e), str(article_block)))
